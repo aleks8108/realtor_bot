@@ -1,12 +1,14 @@
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 def get_main_menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🏠 Найти недвижимость")],
-            [KeyboardButton(text="📤 Оставить заявку"), KeyboardButton(text="📆 Назначить встречу")],
-            [KeyboardButton(text="❓ Задать вопрос"), KeyboardButton(text="📞 Связаться с риэлтором")]
-        ],
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Найти недвижимость", callback_data="search")],
+        [InlineKeyboardButton(text="📤 Оставить заявку", callback_data="request")],
+        [InlineKeyboardButton(text="📆 Назначить встречу", callback_data="appointment")],
+        [InlineKeyboardButton(text="📞 Связаться с риэлтором", callback_data="contact")]
+    ],
         resize_keyboard=True,
         one_time_keyboard=True
     )
+    
+
+

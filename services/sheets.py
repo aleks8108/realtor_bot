@@ -1,27 +1,24 @@
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from config import GOOGLE_SHEETS_CREDENTIALS, SPREADSHEET_ID
+import logging
 
-def init_sheets():
+logging.basicConfig(level=logging.DEBUG)
+
+def init_sheets(sheet_name: str):
     try:
-        print(f"Попытка загрузки credentials из: {GOOGLE_SHEETS_CREDENTIALS}")
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_SHEETS_CREDENTIALS, scope)
         client = gspread.authorize(creds)
-        return client.open_by_key(SPREADSHEET_ID).sheet1
-    except FileNotFoundError:
-        print(f"Ошибка: Файл {GOOGLE_SHEETS_CREDENTIALS} не найден")
-        raise
-    except gspread.exceptions.SpreadsheetNotFound:
-        print(f"Ошибка: Таблица с ID {SPREADSHEET_ID} не найдена")
-        raise
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        return spreadsheet.worksheet(sheet_name)
     except Exception as e:
-        print(f"Ошибка при подключении к Google Sheets: {e}")
+        logging.error(f"Ошибка при инициализации Google Sheets ({sheet_name}): {e}")
         raise
 
 def save_request(data: dict):
     try:
-        sheet = init_sheets()
+        sheet = init_sheets("requests")
         sheet.append_row([
             data.get("name", ""),
             data.get("phone", ""),
@@ -31,14 +28,30 @@ def save_request(data: dict):
             data.get("budget", ""),
             data.get("comments", "")
         ])
+        logging.info("Заявка успешно сохранена в Google Sheets")
     except Exception as e:
-        print(f"Ошибка при сохранении заявки: {e}")
+        logging.error(f"Ошибка при сохранении заявки: {e}")
+        raise
+
+def save_appointment(data: dict, user_name: str, user_id: int):
+    try:
+        sheet = init_sheets("appointments")
+        sheet.append_row([
+            data.get("date", ""),
+            data.get("time", ""),
+            data.get("address", ""),
+            user_name,
+            user_id
+        ])
+        logging.info("Встреча успешно сохранена в Google Sheets")
+    except Exception as e:
+        logging.error(f"Ошибка при сохранении встречи: {e}")
         raise
 
 def get_listings():
     try:
-        sheet = init_sheets()
+        sheet = init_sheets("listings")
         return sheet.get_all_records()
     except Exception as e:
-        print(f"Ошибка при получении данных: {e}")
+        logging.error(f"Ошибка при получении объектов недвижимости: {e}")
         raise

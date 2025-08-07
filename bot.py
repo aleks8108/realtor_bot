@@ -1,25 +1,25 @@
-import asyncio
-import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import BOT_TOKEN
-from handlers import search, start
-
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+from handlers import start, search, request, appointment, chat, admin
+import asyncio
+import logging
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+logging.basicConfig(level=logging.DEBUG)
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
-    
-    dp.include_router(search.router)
-    dp.include_router(start.router)
-    
-    logging.info("Инициализация бота...")
-    try:
-        logging.info("Запуск polling...")
-        await dp.start_polling(bot, handle_errors=True)
-    finally:
-        await bot.session.close()
+    dp.include_routers(
+        start.router,
+        search.router,
+        request.router,
+        appointment.router,
+        chat.router,
+        admin.router
+    )
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
