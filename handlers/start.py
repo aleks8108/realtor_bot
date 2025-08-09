@@ -1,9 +1,14 @@
+# Файл: handlers/start.py
+
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from keyboards.main_menu import get_main_menu
+from aiogram.fsm.context import FSMContext
+from utils.keyboards import get_main_menu, get_menu_and_clear_buttons  # Добавлен импорт
+from states.request import RequestStates  # Добавлен импорт (для ошибки 3)
 import logging
 
+logging.basicConfig(level=logging.DEBUG)
 router = Router()
 
 @router.message(Command("start"))
@@ -24,13 +29,10 @@ async def contact_realtor(message: Message):
     )
 
 @router.callback_query(lambda c: c.data == "request")
-async def process_request(callback: CallbackQuery):
-    await callback.message.answer("Переход к подаче заявки...", reply_markup=get_main_menu())
-    await callback.answer()
-
-@router.callback_query(lambda c: c.data == "appointment")
-async def process_appointment(callback: CallbackQuery):
-    await callback.message.answer("Переход к назначению встречи...", reply_markup=get_main_menu())
+async def process_request(callback: CallbackQuery, state: FSMContext):
+    logging.info(f"Обработан callback 'request' от пользователя {callback.from_user.id}")
+    await callback.message.answer("Начало подачи заявки. Введите ваше имя:", reply_markup=get_menu_and_clear_buttons())
+    await state.set_state(RequestStates.name)
     await callback.answer()
 
 @router.callback_query(lambda c: c.data == "contact")
@@ -44,16 +46,30 @@ async def process_contact(callback: CallbackQuery):
     )
     await callback.answer()
 
+# Файл: handlers/start.py
 @router.callback_query(lambda c: c.data == "return_to_menu")
-async def return_to_menu(callback: CallbackQuery):
+async def return_to_menu(callback: CallbackQuery, state: FSMContext):
     try:
-        await callback.message.edit_text(
-            "Вы вернулись в главное меню.\nВыберите действие:",
-            reply_markup=get_main_menu()
-        )
+        # Проверяем, можно ли отредактировать сообщение
+        message = callback.message
+        if not message.text and not message.caption:  # Если нет текста или подписи
+            await callback.message.answer(
+                "Вы вернулись в главное меню.\nВыберите действие:",
+                reply_markup=get_main_menu()
+            )
+        else:
+            await callback.message.edit_text(
+                "Вы вернулись в главное меню.\nВыберите действие:",
+                reply_markup=get_main_menu()
+            )
     except Exception as e:
         if "message is not modified" in str(e):
             pass
         else:
             logging.error(f"Ошибка при редактировании сообщения: {e}")
+            await callback.message.answer(
+                "Вы вернулись в главное меню.\nВыберите действие:",
+                reply_markup=get_main_menu()
+            )
+    await state.clear()
     await callback.answer()

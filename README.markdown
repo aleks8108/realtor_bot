@@ -25,6 +25,15 @@
    ```bash
    python bot.py
    ```
+  
+## создание виртуальной среды 
+  C:\Users\aleks\AppData\Local\Programs\Python\Python312\python.exe -m venv venv
+
+## активация виртуальной среды
+.\venv\Scripts\activate
+
+## Если используете PowerShell и возникает ошибка, связанная с политиками выполнения скриптов, сначала выполните: 
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 
 ## Удаление кэш
      Remove-Item -Path "__pycache__" -Recurse -Force   
