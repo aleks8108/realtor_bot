@@ -1,13 +1,31 @@
-# Файл: states/request.py
+"""
+Состояния FSM для процесса подачи заявки на недвижимость.
+Эти состояния управляют пошаговым сбором данных от пользователя.
+"""
+
 from aiogram.fsm.state import State, StatesGroup
 
+
 class RequestStates(StatesGroup):
-    name = State()
-    phone = State()
-    property_type = State()
-    deal_type = State()
-    district = State()
-    budget = State()
-    rooms = State()
-    comments = State()
-    listing = State()
+    """
+    Группа состояний для обработки заявок пользователей.
+    Каждое состояние соответствует одному шагу в процессе подачи заявки.
+    """
+    
+    # Основные данные пользователя
+    name = State()                  # Ввод имени пользователя
+    phone = State()                 # Ввод номера телефона
+    
+    # Критерии поиска недвижимости
+    property_type = State()         # Выбор типа недвижимости (квартира, дом и т.д.)
+    deal_type = State()             # Выбор типа сделки (покупка, аренда)
+    district = State()              # Выбор района
+    budget = State()                # Выбор бюджета
+    rooms = State()                 # Выбор количества комнат
+    
+    # Работа с найденными объектами
+    viewing_listings = State()      # Просмотр найденных объектов
+    commenting = State()            # Ввод комментария к заявке
+    
+    # Завершающие состояния
+    request_completed = State()     # Заявка завершена

@@ -1,421 +1,323 @@
-from aiogram import Router, F, types
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.exceptions import TelegramBadRequest
-from services.gspread_utils import get_listings
-from utils.keyboards import get_main_menu, get_property_type_keyboard, get_deal_type_keyboard, get_district_keyboard, get_budget_keyboard, get_rooms_keyboard, get_listing_menu
-from aiogram import types
-import logging
-from config import ADMIN_ID
-from handlers.request import RequestStates  # Импорт состояний для заявок
+"""
+Обработчик поиска и просмотра объектов недвижимости.
+Этот модуль управляет всем процессом поиска объектов, их отображения
+и навигации между ними, используя централизованный сервис для работы с объектами.
+"""
 
-logging.basicConfig(level=logging.DEBUG)
+import logging
+from typing import Optional, Dict, Any
+
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+
+from states.search import SearchStates
+from services.sheets import GoogleSheetsService
+from services.listings import ListingService
+from services.error_handler import handle_errors, ErrorHandler
+from utils.keyboards import (
+    create_main_keyboard, 
+    create_property_keyboard, 
+    create_navigation_keyboard
+)
+from exceptions.custom_exceptions import ServiceError
+
+# Создаем роутер для обработчиков поиска
 router = Router()
 
-class SearchStates(StatesGroup):
-    awaiting_property_type = State()
-    awaiting_deal_type = State()
-    awaiting_district = State()
-    awaiting_budget = State()
-    awaiting_rooms = State()
-    viewing_listings = State()
+# Инициализируем сервисы
+sheets_service = GoogleSheetsService()
+listing_service = ListingService(sheets_service)
+error_handler = ErrorHandler()
 
-@router.callback_query(lambda c: c.data == "search")
-async def start_search(callback: CallbackQuery, state: FSMContext):
-    logging.info(f"Запуск поиска недвижимости для пользователя {callback.from_user.id}")
+logger = logging.getLogger(__name__)
+
+
+@router.message(F.text == "🔍 Поиск объектов")
+@handle_errors(error_handler)
+async def start_search(message: Message, state: FSMContext):
+    """
+    Начинает процесс поиска объектов недвижимости.
+    Загружает все доступные объекты и показывает первый из них.
+    """
     try:
-        await callback.message.edit_text(
-            "Начинаем поиск недвижимости. Выберите тип недвижимости:", 
-            reply_markup=get_property_type_keyboard()
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.answer(
-                "Начинаем поиск недвижимости. Выберите тип недвижимости:", 
-                reply_markup=get_property_type_keyboard()
+        # Получаем все объекты недвижимости
+        properties = await sheets_service.get_all_properties()
+        
+        if not properties:
+            await message.reply(
+                "😔 К сожалению, на данный момент нет доступных объектов.\n"
+                "Попробуйте позже или свяжитесь с нашими менеджерами.",
+                reply_markup=create_main_keyboard()
             )
-    await state.set_state(SearchStates.awaiting_property_type)
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("property_type_"))
-async def process_property_type_callback(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(property_type=callback.data.replace("property_type_", ""))
-    try:
-        await callback.message.edit_text(
-            "Выберите тип сделки:", 
-            reply_markup=get_deal_type_keyboard()
+            return
+        
+        # Сохраняем список объектов и текущий индекс в состоянии
+        await state.update_data(
+            properties=properties,
+            current_index=0
         )
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.answer(
-                "Выберите тип сделки:", 
-                reply_markup=get_deal_type_keyboard()
-            )
-    await state.set_state(SearchStates.awaiting_deal_type)
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("deal_type_"))
-async def process_deal_type_callback(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(deal_type=callback.data.replace("deal_type_", ""))
-    try:
-        await callback.message.edit_text(
-            "Выберите район:", 
-            reply_markup=get_district_keyboard()
+        
+        # Показываем первый объект
+        await show_property_at_index(message, state, 0, is_new_search=True)
+        
+        # Устанавливаем состояние просмотра
+        await state.set_state(SearchStates.viewing_properties)
+        
+        logger.info(f"Пользователь {message.from_user.id} начал поиск. Найдено {len(properties)} объектов")
+        
+    except ServiceError as e:
+        logger.error(f"Ошибка при загрузке объектов: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при загрузке объектов. Попробуйте позже.",
+            reply_markup=create_main_keyboard()
         )
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.answer(
-                "Выберите район:", 
-                reply_markup=get_district_keyboard()
-            )
-    await state.set_state(SearchStates.awaiting_district)
-    await callback.answer()
 
-@router.callback_query(F.data.startswith("district_"))
-async def process_district_callback(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(district=callback.data.replace("district_", ""))
-    try:
-        await callback.message.edit_text(
-            "Выберите бюджет:", 
-            reply_markup=get_budget_keyboard()
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.answer(
-                "Выберите бюджет:", 
-                reply_markup=get_budget_keyboard()
-            )
-    await state.set_state(SearchStates.awaiting_budget)
-    await callback.answer()
 
-@router.callback_query(F.data.startswith("budget_"))
-async def process_budget_callback(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(budget=callback.data.replace("budget_", ""))
-    try:
-        await callback.message.edit_text(
-            "Выберите количество комнат:", 
-            reply_markup=get_rooms_keyboard()
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.answer(
-                "Выберите количество комнат:", 
-                reply_markup=get_rooms_keyboard()
-            )
-    await state.set_state(SearchStates.awaiting_rooms)
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("rooms_"))
-async def process_rooms_callback(callback: CallbackQuery, state: FSMContext):
-    rooms = callback.data.split('_')[1] if callback.data.startswith('rooms_') else None
-    await state.update_data(rooms=rooms)
+async def show_property_at_index(
+    message: Message, 
+    state: FSMContext, 
+    index: int, 
+    is_new_search: bool = False,
+    edit_message: bool = False
+):
+    """
+    Показывает объект недвижимости по указанному индексу.
+    Эта функция централизует логику отображения объектов и может использоваться
+    как для новых поисков, так и для навигации между объектами.
+    """
     data = await state.get_data()
+    properties = data.get('properties', [])
     
-    try:
-        listings = get_listings()
-    except Exception as e:
-        logging.error(f"Ошибка при получении данных из Google Sheets: {e}")
-        listings = []
-
-    filtered_listings = [
-        l for l in listings
-        if l.get('property_type') == data['property_type'] and
-           l.get('deal_type') == data['deal_type'] and
-           l.get('district') == data['district'] and
-           float(l.get('price', 0)) <= float(data['budget'].split('-')[-1]) and
-           (rooms is None or str(l.get('rooms', '')) == str(rooms))
-    ]
-
-    await state.update_data(filtered_listings=filtered_listings, current_listing_index=0, current_photo_index=0)
+    if not properties or index < 0 or index >= len(properties):
+        await message.reply(
+            "❌ Объект не найден.",
+            reply_markup=create_main_keyboard()
+        )
+        return
     
-    try:
-        await callback.message.delete()
-    except Exception as e:
-        logging.error(f"Ошибка при удалении сообщения: {e}")
-
-    if filtered_listings:
-        await show_listing(callback.message, state)
+    current_property = properties[index]
+    
+    # Обновляем текущий индекс в состоянии
+    await state.update_data(current_index=index)
+    
+    # Форматируем сообщение об объекте
+    property_message = listing_service.format_property_message(
+        current_property,
+        index + 1,  # Номер для отображения (начинается с 1)
+        len(properties)  # Общее количество объектов
+    )
+    
+    # Создаем клавиатуру для текущего объекта
+    keyboard = create_property_keyboard(
+        property_id=current_property.get('id'),
+        current_index=index,
+        total_count=len(properties)
+    )
+    
+    # Отправляем или редактируем сообщение в зависимости от контекста
+    if edit_message:
+        await message.edit_text(
+            property_message,
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
     else:
-        await callback.message.answer(
-            "По вашим критериям ничего не найдено. Попробуйте изменить параметры поиска.",
-            reply_markup=get_main_menu()
+        # Для нового поиска показываем информационное сообщение
+        if is_new_search:
+            intro_message = (
+                f"🏠 Найдено <b>{len(properties)}</b> объектов недвижимости\n\n"
+                f"Используйте кнопки для навигации между объектами:"
+            )
+            await message.reply(intro_message, parse_mode='HTML')
+        
+        await message.reply(
+            property_message,
+            reply_markup=keyboard,
+            parse_mode='HTML'
         )
-        await state.clear()
+
+
+@router.callback_query(F.data.startswith("nav_"))
+@handle_errors(error_handler)
+async def handle_navigation(callback: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает навигацию между объектами недвижимости.
+    Поддерживает переходы к следующему, предыдущему, первому и последнему объекту.
+    """
+    action = callback.data.split("_")[1]  # Извлекаем действие из callback_data
+    
+    data = await state.get_data()
+    properties = data.get('properties', [])
+    current_index = data.get('current_index', 0)
+    
+    if not properties:
+        await callback.answer("❌ Нет доступных объектов", show_alert=True)
+        return
+    
+    # Определяем новый индекс в зависимости от действия
+    if action == "next":
+        new_index = min(current_index + 1, len(properties) - 1)
+    elif action == "prev":
+        new_index = max(current_index - 1, 0)
+    elif action == "first":
+        new_index = 0
+    elif action == "last":
+        new_index = len(properties) - 1
+    else:
+        await callback.answer("❌ Неизвестное действие", show_alert=True)
+        return
+    
+    # Проверяем, не находимся ли мы уже на нужном объекте
+    if new_index == current_index:
+        # Даем пользователю понять, что он достиг границы списка
+        if action in ["next", "last"] and current_index == len(properties) - 1:
+            await callback.answer("📍 Это последний объект в списке")
+        elif action in ["prev", "first"] and current_index == 0:
+            await callback.answer("📍 Это первый объект в списке")
+        else:
+            await callback.answer()
+        return
+    
+    # Показываем объект с новым индексом
+    await show_property_at_index(
+        callback.message, 
+        state, 
+        new_index, 
+        edit_message=True
+    )
+    
     await callback.answer()
 
-async def show_listing(message: types.Message, state: FSMContext):
+
+@router.callback_query(F.data.startswith("photo_"))
+@handle_errors(error_handler)
+async def handle_photo_navigation(callback: CallbackQuery, state: FSMContext):
     """
-    Отправляет пользователю информацию о текущем объекте недвижимости и его фотографии.
-
-    :param message: Объект сообщения aiogram.types.Message, в который будет отправлен ответ.
-    :param state: Контекст состояния FSMContext для хранения и получения данных поиска.
+    Обрабатывает навигацию по фотографиям текущего объекта.
+    Позволяет пользователю просматривать все доступные фотографии объекта.
     """
+    try:
+        # Извлекаем ID объекта и номер фотографии из callback_data
+        # Формат: "photo_123_1" где 123 - ID объекта, 1 - номер фотографии
+        parts = callback.data.split("_")
+        property_id = int(parts[1])
+        photo_index = int(parts[2])
+        
+    except (IndexError, ValueError):
+        await callback.answer("❌ Ошибка в данных фотографии", show_alert=True)
+        return
+    
     data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await message.answer("Объекты не найдены.", reply_markup=get_main_menu())
-        return
-
-    current_listing_index = data.get('current_listing_index', 0)
-    listing = filtered_listings[current_listing_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    )
-    current_photo_index = data.get('current_photo_index', 0)
-    logging.debug(f"show_listing: listing_index={current_listing_index}, photo_index={current_photo_index}, total_photos={len(photo_urls)}, listing={listing}")
-    keyboard = get_listing_menu(
-        listing_exists=True,
-        comments_provided=False,
-        has_next_listing=current_listing_index < len(filtered_listings) - 1,
-        listing_index=current_listing_index,
-        photo_index=current_photo_index,
-        total_photos=len(photo_urls),
-        total_listings=len(filtered_listings),
-        listing_id=listing['id']
-    )
-    message_text = f"Объект {current_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing.get('description', 'Нет описания')}\nЦена: {listing['price']} ₽"
-    await message.answer(message_text, reply_markup=keyboard)
-    if photo_urls:
-        await message.answer_photo(photo=photo_urls[current_photo_index])
-    await state.set_state(SearchStates.viewing_listings)
-    logging.info(f"Showing listing: index={current_listing_index}, total={len(filtered_listings)}")
-
-@router.callback_query(F.data.startswith("next_photo_"))
-async def next_photo_search(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await callback.answer("Нет доступных объектов.")
+    properties = data.get('properties', [])
+    current_index = data.get('current_index', 0)
+    
+    # Находим текущий объект
+    current_property = None
+    for prop in properties:
+        if prop.get('id') == property_id:
+            current_property = prop
+            break
+    
+    if not current_property:
+        await callback.answer("❌ Объект не найден", show_alert=True)
         return
     
-    current_index = data.get('current_listing_index', 0)
-    listing = filtered_listings[current_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip() and url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip() and url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    )
+    # Получаем фотографии объекта
+    photos = listing_service.get_property_photos(current_property)
     
-    callback_parts = callback.data.split('_')
-    if len(callback_parts) != 4:
-        await callback.answer("Неверный формат команды.")
-        return
-    new_listing_index = int(callback_parts[2])
-    new_photo_index = int(callback_parts[3])
-    
-    if new_photo_index >= len(photo_urls):
-        await callback.answer("Больше нет фотографий.")
+    if not photos or photo_index < 0 or photo_index >= len(photos):
+        await callback.answer("❌ Фотография не найдена", show_alert=True)
         return
     
-    await state.update_data(current_listing_index=new_listing_index, current_photo_index=new_photo_index)
-    
-    await callback.message.delete()
-    await callback.message.answer_photo(
-        photo=photo_urls[new_photo_index],
-        caption=f"Объект {new_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing['description']}\nЦена: {listing['price']} ₽\nФото {new_photo_index + 1}/{len(photo_urls)}",
-        reply_markup=get_listing_menu(
-            listing_exists=True,
-            comments_provided=False,
-            has_next_listing=new_listing_index < len(filtered_listings) - 1,
-            listing_index=new_listing_index,
-            photo_index=new_photo_index,
-            total_photos=len(photo_urls),
-            total_listings=len(filtered_listings),
-            listing_id=listing['id']
+    try:
+        # Отправляем фотографию пользователю
+        photo_url = photos[photo_index]
+        caption = (
+            f"📸 Фотография {photo_index + 1} из {len(photos)}\n"
+            f"🏠 {current_property.get('address', 'Адрес не указан')}"
         )
-    )
-    logging.info(f"Отправлено фото {new_photo_index + 1} для объекта ID {listing['id']} пользователю {callback.from_user.id}")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("prev_photo_"))
-async def prev_photo_search(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await callback.answer("Нет доступных объектов.")
-        return
-    
-    current_index = data.get('current_listing_index', 0)
-    listing = filtered_listings[current_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip() and url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip() and url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    )
-    
-    callback_parts = callback.data.split('_')
-    if len(callback_parts) != 4:
-        await callback.answer("Неверный формат команды.")
-        return
-    new_listing_index = int(callback_parts[2])
-    new_photo_index = int(callback_parts[3])
-    
-    if new_photo_index < 0:
-        await callback.answer("Это первое фото.")
-        return
-    
-    await state.update_data(current_listing_index=new_listing_index, current_photo_index=new_photo_index)
-    
-    await callback.message.delete()
-    await callback.message.answer_photo(
-        photo=photo_urls[new_photo_index],
-        caption=f"Объект {new_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing['description']}\nЦена: {listing['price']} ₽\nФото {new_photo_index + 1}/{len(photo_urls)}",
-        reply_markup=get_listing_menu(
-            listing_exists=True,
-            comments_provided=False,
-            has_next_listing=new_listing_index < len(filtered_listings) - 1,
-            listing_index=new_listing_index,
-            photo_index=new_photo_index,
-            total_photos=len(photo_urls),
-            total_listings=len(filtered_listings),
-            listing_id=listing['id']
+        
+        # Создаем клавиатуру для навигации по фотографиям
+        photo_keyboard = create_navigation_keyboard(
+            property_id=property_id,
+            current_photo=photo_index,
+            total_photos=len(photos),
+            keyboard_type="photo"
         )
-    )
-    logging.info(f"Отправлено фото {new_photo_index + 1} для объекта ID {listing['id']} пользователю {callback.from_user.id}")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("next_listing_"))
-async def next_listing_search(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await callback.answer("Нет доступных объектов.")
-        return
-    
-    callback_parts = callback.data.split('_')
-    if len(callback_parts) != 3:
-        await callback.answer("Неверный формат команды.")
-        return
-    new_listing_index = int(callback_parts[2])
-    
-    if new_listing_index >= len(filtered_listings):
-        await callback.answer("Больше нет объектов.")
-        return
-    
-    listing = filtered_listings[new_listing_index]
-    photo_urls = [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    await state.update_data(current_listing_index=new_listing_index, current_photo_index=0)
-    
-    await callback.message.delete()
-    message_text = f"Объект {new_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing['description']}\nЦена: {listing['price']} ₽"
-    keyboard = get_listing_menu(
-        listing_exists=True,
-        comments_provided=False,
-        has_next_listing=new_listing_index < len(filtered_listings) - 1,
-        listing_index=new_listing_index,
-        photo_index=0,
-        total_photos=len(photo_urls),
-        total_listings=len(filtered_listings),
-        listing_id=listing['id']
-    )
-    await callback.message.answer(message_text, reply_markup=keyboard)
-    if photo_urls:
-        await callback.message.answer_photo(photo=photo_urls[0])
-    logging.info(f"Отправлен объект {new_listing_index + 1} (ID: {listing['id']}) пользователю {callback.from_user.id}")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("prev_listing_"))
-async def prev_listing_search(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await callback.answer("Нет доступных объектов.")
-        return
-    
-    callback_parts = callback.data.split('_')
-    if len(callback_parts) != 3:
-        await callback.answer("Неверный формат команды.")
-        return
-    new_listing_index = int(callback_parts[2])
-    
-    if new_listing_index < 0:
-        await callback.answer("Это первый объект.")
-        return
-    
-    listing = filtered_listings[new_listing_index]
-    photo_urls = [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    await state.update_data(current_listing_index=new_listing_index, current_photo_index=0)
-    
-    await callback.message.delete()
-    message_text = f"Объект {new_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing['description']}\nЦена: {listing['price']} ₽"
-    keyboard = get_listing_menu(
-        listing_exists=True,
-        comments_provided=False,
-        has_next_listing=new_listing_index < len(filtered_listings) - 1,
-        listing_index=new_listing_index,
-        photo_index=0,
-        total_photos=len(photo_urls),
-        total_listings=len(filtered_listings),
-        listing_id=listing['id']
-    )
-    await callback.message.answer(message_text, reply_markup=keyboard)
-    if photo_urls:
-        await callback.message.answer_photo(photo=photo_urls[0])
-    logging.info(f"Отправлен объект {new_listing_index + 1} (ID: {listing['id']}) пользователю {callback.from_user.id}")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("interested_"))
-async def interested(callback: CallbackQuery, state: FSMContext):
-    """
-    Обрабатывает интерес к объекту, отправляет уведомление админу и запрашивает комментарий.
-    """
-    listing_id = callback.data.replace("interested_", "")
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    listing = next((l for l in filtered_listings if str(l['id']) == listing_id), None)
-    
-    if not listing:
-        await callback.answer("Объект не найден.")
-        return
-    
-    # Уведомление админу
-    if ADMIN_ID:
-        await callback.bot.send_message(
-            ADMIN_ID[0],
-            f"Пользователь {callback.from_user.id} (@{callback.from_user.username or 'no_username'}) заинтересован в объекте ID: {listing_id}\n"
-            f"{listing.get('description', 'Нет описания')}\nЦена: {listing.get('price', 'Не указана')} ₽"
+        
+        await callback.message.answer_photo(
+            photo=photo_url,
+            caption=caption,
+            reply_markup=photo_keyboard
         )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка отправки фотографии: {e}")
+        await callback.answer("❌ Ошибка загрузки фотографии", show_alert=True)
+
+
+@router.callback_query(F.data == "back_to_list")
+@handle_errors(error_handler)
+async def back_to_property_list(callback: CallbackQuery, state: FSMContext):
+    """
+    Возвращает пользователя к списку объектов из режима просмотра фотографий
+    или других детальных режимов просмотра.
+    """
+    data = await state.get_data()
+    current_index = data.get('current_index', 0)
     
-    # Запрос комментария
-    current_listing_index = data.get('current_listing_index', 0)
-    listing = filtered_listings[current_listing_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
+    # Показываем текущий объект
+    await show_property_at_index(
+        callback.message,
+        state,
+        current_index,
+        edit_message=True
     )
-    message_text = f"Ваш интерес к объекту ID: {listing_id} зафиксирован.\n\nПожалуйста, введите комментарий к заявке (или напишите 'Без комментариев'):"
-    keyboard = get_listing_menu(
-        listing_exists=True,
-        comments_provided=False,
-        has_next_listing=current_listing_index < len(filtered_listings) - 1,
-        listing_index=current_listing_index,
-        photo_index=data.get('current_photo_index', 0),
-        total_photos=len(photo_urls),
-        total_listings=len(filtered_listings),
-        listing_id=listing['id']
+    
+    await callback.answer("🔙 Возврат к списку объектов")
+
+
+@router.callback_query(F.data == "end_search")
+@handle_errors(error_handler)
+async def end_search(callback: CallbackQuery, state: FSMContext):
+    """
+    Завершает процесс поиска и возвращает пользователя в главное меню.
+    Очищает все данные поиска из состояния FSM.
+    """
+    await state.clear()
+    
+    await callback.message.edit_text(
+        "✅ Поиск завершен.\n\n"
+        "Спасибо за интерес к нашим объектам! "
+        "Если у вас есть вопросы или вы хотите подать заявку на просмотр, "
+        "воспользуйтесь соответствующими функциями бота.",
+        reply_markup=create_main_keyboard()
     )
-    await callback.message.answer(message_text, reply_markup=keyboard)
-    if photo_urls:
-        await callback.message.answer_photo(photo=photo_urls[data.get('current_photo_index', 0)])
-    await state.set_state(RequestStates.comments)  # Переход к состоянию ввода комментария
-    await callback.answer("Ваш интерес зафиксирован. Пожалуйста, введите комментарий.")
-    logging.info(f"Пользователь {callback.from_user.id} заинтересован в объекте ID: {listing_id}")
+    
+    await callback.answer()
+
+
+@router.message(SearchStates.viewing_properties)
+@handle_errors(error_handler)
+async def handle_text_during_search(message: Message, state: FSMContext):
+    """
+    Обрабатывает текстовые сообщения во время просмотра объектов.
+    Предоставляет пользователю подсказки о том, как использовать интерфейс.
+    """
+    if message.text and message.text.lower() in ['выход', 'завершить', 'стоп']:
+        await end_search(message, state)
+        return
+    
+    # Показываем подсказку пользователю
+    await message.reply(
+        "💡 Используйте кнопки под сообщением для навигации по объектам.\n\n"
+        "• ⬅️➡️ - переход между объектами\n"
+        "• 📸 - просмотр фотографий\n"
+        "• 📋 - подача заявки на просмотр\n"
+        "• ❌ - завершение поиска\n\n"
+        "Или напишите 'выход' для завершения поиска.",
+        reply_markup=None
+    )

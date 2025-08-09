@@ -1,493 +1,275 @@
 
-from aiogram import Router, F, types
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.types import CallbackQuery
-from aiogram.types import Message
-from aiogram.exceptions import TelegramBadRequest
-from states.request import RequestStates
-from services.sheets import save_request, get_listings
+"""
+Обработчик процесса подачи заявок на недвижимость.
+Этот модуль координирует весь процесс от начала подачи заявки до ее завершения,
+используя улучшенную архитектуру с централизованными сервисами и обработкой ошибок.
+"""
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import ADMIN_ID
-from utils.keyboards import get_property_type_keyboard, get_deal_type_keyboard, get_district_keyboard, get_budget_keyboard, get_start_reply_keyboard, get_rooms_keyboard, get_listing_menu, get_menu_and_clear_buttons, get_main_menu
 import logging
 import asyncio
+from datetime import datetime
+from typing import Optional
 
-logging.basicConfig(filename='bot.log', level=logging.INFO, encoding='utf-8')
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+
+#from realtor_bot.config import ADMIN_ID
+from states.request import RequestStates
+from services.sheets import GoogleSheetsService
+from services.listings import ListingService
+from services.error_handler import handle_error, ErrorHandler
+from utils.keyboards import create_main_keyboard, create_cancel_keyboard
+from utils.validators import validate_phone, validate_name
+from exceptions.custom_exceptions import ValidationError, ServiceError
+
+# Создаем роутер для обработчиков заявок
 router = Router()
 
-@router.message(F.text == "📝 Оставить заявку")
-async def start_request(message: types.Message, state: FSMContext):
-    logging.info(f"Запуск процесса заявки для пользователя {message.from_user.id}")
-    await message.answer("Введите ваше имя:", reply_markup=get_menu_and_clear_buttons())
-    await state.set_state(RequestStates.name)
+# Инициализируем сервисы
+sheets_service = GoogleSheetsService()
+listing_service = ListingService(sheets_service)
+error_handler = ErrorHandler()
 
-@router.message(RequestStates.name)
-async def process_name(message: types.Message, state: FSMContext):
-    logging.info(f"Получено имя от пользователя {message.from_user.id}: {message.text}")
-    if not message.text or not message.text.strip():
-        await message.answer("Пожалуйста, введите имя.", reply_markup=get_menu_and_clear_buttons())
-        return
-    await state.update_data(name=message.text.strip())
-    await message.answer("Введите ваш номер телефона (или отправьте контакт через Telegram):",
-                        reply_markup=types.ReplyKeyboardMarkup(
-                            keyboard=[[types.KeyboardButton(text="📱 Отправить контакт", request_contact=True)]],
-                            resize_keyboard=True,
-                            one_time_keyboard=True
-                        ))
-    await state.set_state(RequestStates.phone)
+logger = logging.getLogger(__name__)
 
-@router.message(RequestStates.phone, F.contact | F.text)
-async def process_phone(message: types.Message, state: FSMContext):
-    logging.info(f"Получен телефон от пользователя {message.from_user.id}")
-    phone = message.contact.phone_number if message.contact else message.text.strip()
-    if not phone or not any(c.isdigit() for c in phone):
-        await message.answer("Пожалуйста, введите корректный номер телефона.", reply_markup=get_menu_and_clear_buttons())
-        return
-    await state.update_data(phone=phone)
-    await message.answer("Выберите тип недвижимости:", reply_markup=get_property_type_keyboard())
-    await state.set_state(RequestStates.property_type)
 
-@router.callback_query(RequestStates.property_type)
-async def process_property_type(callback: types.CallbackQuery, state: FSMContext):
-    logging.info(f"Выбран тип недвижимости от пользователя {callback.from_user.id}: {callback.data}")
-    await state.update_data(property_type=callback.data)
+@router.callback_query(F.data.startswith("request_"))
+@handle_error(error_handler)
+async def handle_request_callback(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработчик начала процесса подачи заявки.
+    Извлекает ID объекта из callback_data и начинает процесс сбора информации.
+    """
+    # Извлекаем ID объекта из callback_data (формат: "request_123")
     try:
-        await callback.message.edit_text("Выберите тип сделки:", reply_markup=get_deal_type_keyboard())
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        elif "there is no text in the message to edit" in str(e):
-            await callback.message.answer("Выберите тип сделки:", reply_markup=get_deal_type_keyboard())
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.answer("Выберите тип сделки:", reply_markup=get_deal_type_keyboard())
-    await state.set_state(RequestStates.deal_type)
-    await callback.answer()
-
-@router.callback_query(RequestStates.deal_type)
-async def process_deal_type(callback: types.CallbackQuery, state: FSMContext):
-    logging.info(f"Выбран тип сделки от пользователя {callback.from_user.id}: {callback.data}")
-    await state.update_data(deal_type=callback.data)
-    try:
-        await callback.message.edit_text("Выберите район:", reply_markup=get_district_keyboard())
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.edit_text("Выберите район:", reply_markup=get_district_keyboard())
-    await state.set_state(RequestStates.district)
-    await callback.answer()
-
-@router.callback_query(RequestStates.district)
-async def process_district(callback: types.CallbackQuery, state: FSMContext):
-    logging.info(f"Выбран район от пользователя {callback.from_user.id}: {callback.data}")
-    await state.update_data(district=callback.data)
-    try:
-        await callback.message.edit_text("Выберите бюджет:", reply_markup=get_budget_keyboard())
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.edit_text("Выберите бюджет:", reply_markup=get_budget_keyboard())
-    await state.set_state(RequestStates.budget)
-    await callback.answer()
-
-@router.callback_query(RequestStates.budget)
-async def process_budget(callback: types.CallbackQuery, state: FSMContext):
-    logging.info(f"Выбран бюджет от пользователя {callback.from_user.id}: {callback.data}")
-    await state.update_data(budget=callback.data)
-    try:
-        await callback.message.edit_text("Выберите количество комнат:", reply_markup=get_rooms_keyboard())
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            pass
-        else:
-            logging.error(f"Ошибка при редактировании сообщения: {e}")
-            await callback.message.edit_text("Выберите количество комнат:", reply_markup=get_rooms_keyboard())
-    await state.set_state(RequestStates.rooms)
-    await callback.answer()
-
-@router.callback_query(RequestStates.rooms)
-async def process_rooms(callback: CallbackQuery, state: FSMContext):
-    logging.info(f"Выбрано количество комнат от пользователя {callback.from_user.id}: {callback.data}")
-    rooms = callback.data.split('_')[1] if callback.data.startswith('rooms_') else None
-    await state.update_data(rooms=rooms)
-    data = await state.get_data()
-    required_fields = ['name', 'phone', 'property_type', 'deal_type', 'district', 'budget']
-    missing_fields = [field for field in required_fields if field not in data]
-    if missing_fields:
-        logging.error(f"Отсутствуют обязательные поля: {missing_fields}")
-        await callback.message.answer("Произошла ошибка. Пожалуйста, начните заново.", reply_markup=get_main_menu())
-        await state.clear()
-        await callback.answer()
+        property_id = int(callback.data.split("_")[1])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Ошибка в данных объекта", show_alert=True)
         return
 
+    # Получаем информацию об объекте для отображения пользователю
+    property_info = await sheets_service.get_property_by_id(property_id)
+    if not property_info:
+        await callback.answer("❌ Объект не найден", show_alert=True)
+        return
+
+    # Сохраняем информацию об объекте в состоянии FSM
+    await state.update_data(
+        property_id=property_id,
+        property_info=property_info
+    )
+
+    # Формируем сообщение с информацией об объекте
+    property_message = listing_service.format_property_message(property_info)
+    
+    await callback.message.edit_text(
+        f"{property_message}\n\n"
+        f"📋 <b>Подача заявки на просмотр</b>\n\n"
+        f"Для подачи заявки, пожалуйста, введите ваше имя:",
+        reply_markup=create_cancel_keyboard(),
+        parse_mode='HTML'
+    )
+    
+    # Переходим к следующему состоянию
+    await state.set_state(RequestStates.waiting_for_name)
+    await callback.answer()
+
+
+@router.message(RequestStates.waiting_for_name)
+@handle_error(error_handler)
+async def process_name(message: Message, state: FSMContext):
+    """
+    Обработчик ввода имени пользователя.
+    Валидирует введенное имя и переходит к запросу номера телефона.
+    """
+    name = message.text.strip()
+    
+    # Проверка на команду отмены
+    if name.lower() in ['/cancel', 'отмена']:
+        await cancel_request(message, state)
+        return
+    
+    # Валидируем введенное имя
     try:
-        listings = get_listings()
-    except Exception as e:
-        logging.error(f"Ошибка при получении данных из Google Sheets: {e}")
-        listings = []
-
-    filtered_listings = [
-        l for l in listings
-        if l.get('property_type') == data['property_type'].replace("property_type_", "") and
-           l.get('deal_type') == data['deal_type'].replace("deal_type_", "") and
-           l.get('district') == data['district'].replace("district_", "") and
-           float(l.get('price', 0)) <= float(data['budget'].replace("budget_", "").split('-')[-1]) and
-           (data['rooms'] is None or str(l.get('rooms', '')) == str(data['rooms']))
-    ]
-
-    await state.update_data(filtered_listings=filtered_listings, current_listing_index=0, current_photo_index=0)
-
-    if filtered_listings:
-        listing = filtered_listings[0]
-        photo_urls = (
-            [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-            if isinstance(listing.get('photo_url'), str) else
-            [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
+        validate_name(name)
+    except ValidationError as e:
+        await message.reply(
+            f"❌ {str(e)}\n\nПожалуйста, введите корректное имя:",
+            reply_markup=create_cancel_keyboard()
         )
-        message_text = f"Объект 1/{len(filtered_listings)}\nID: {listing['id']}\n{listing.get('description', 'Нет описания')}\nЦена: {listing['price']} ₽\n\nПожалуйста, введите комментарий к заявке (или напишите 'Без комментариев'):"
-        keyboard = get_listing_menu(
-            listing_exists=True,
-            comments_provided=False,
-            has_next_listing=len(filtered_listings) > 1,
-            listing_index=0,
-            photo_index=0,
-            total_photos=len(photo_urls),
-            total_listings=len(filtered_listings),
-            listing_id=listing['id']
+        return
+    
+    # Сохраняем имя в состоянии
+    await state.update_data(user_name=name)
+    
+    await message.reply(
+        f"✅ Спасибо, {name}!\n\n"
+        f"📱 Теперь введите ваш номер телефона для связи:\n"
+        f"(в формате +7XXXXXXXXXX или 8XXXXXXXXXX)",
+        reply_markup=create_cancel_keyboard()
+    )
+    
+    await state.set_state(RequestStates.waiting_for_phone)
+
+
+@router.message(RequestStates.waiting_for_phone)
+@handle_error(error_handler)
+async def process_phone(message: Message, state: FSMContext):
+    """
+    Обработчик ввода номера телефона.
+    Валидирует номер телефона и завершает процесс подачи заявки.
+    """
+    phone = message.text.strip()
+    
+    # Проверка на команду отмены
+    if phone.lower() in ['/cancel', 'отмена']:
+        await cancel_request(message, state)
+        return
+    
+    # Валидируем номер телефона
+    try:
+        normalized_phone = validate_phone(phone)
+    except ValidationError as e:
+        await message.reply(
+            f"❌ {str(e)}\n\n"
+            f"Пожалуйста, введите корректный номер телефона:",
+            reply_markup=create_cancel_keyboard()
         )
-        sent_message = await callback.message.answer(message_text, reply_markup=keyboard)
-        if photo_urls:
-            await callback.message.answer_photo(photo=photo_urls[0])
-    else:
-        message_text = "Объект с указанными параметрами не найден. Рекомендуем завершить заявку — риэлтор свяжется с вами.\n\nПожалуйста, введите комментарий к заявке (или напишите 'Без комментариев'):"
-        keyboard = get_listing_menu(listing_exists=False, comments_provided=False)
-        sent_message = await callback.message.answer(message_text, reply_markup=keyboard)
-
-    await state.set_state(RequestStates.listing)
-    logging.debug(f"Состояние установлено: {await state.get_state()}")
-    await callback.answer()
-
-@router.message(RequestStates.listing)
-async def process_listing_comments(message: Message, state: FSMContext):
-    logging.info(f"Получены комментарии от пользователя {message.from_user.id}: {message.text}")
-    current_state = await state.get_state()
-    logging.debug(f"Текущее состояние: {current_state}")
-    comments = message.text.strip() if message.text and message.text.strip() else "Без комментариев"
-    await state.update_data(comments=comments)
+        return
+    
+    # Получаем данные из состояния
     data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    listing_exists = bool(filtered_listings)
-
-    logging.debug(f"Обработка комментария: listing_exists={listing_exists}, comments={comments}, state={current_state}")
-
-    # Автоматическое завершение заявки
+    
+    # Подготавливаем данные для сохранения заявки
     request_data = {
-        "name": data.get("name", ""),
-        "phone": data.get("phone", ""),
-        "property_type": data.get("property_type", "").replace("property_type_", ""),
-        "deal_type": data.get("deal_type", "").replace("deal_type_", ""),
-        "district": data.get("district", "").replace("district_", ""),
-        "budget": data.get("budget", "").replace("budget_", ""),
-        "rooms": data.get("rooms", ""),
-        "comments": comments,
-        "user_id": message.from_user.id,
-        "username": message.from_user.username or "no_username"
+        'timestamp': datetime.now().strftime('%d.%m.%Y %H:%M'),
+        'user_id': message.from_user.id,
+        'username': message.from_user.username or 'Не указан',
+        'user_name': data['user_name'],
+        'phone': normalized_phone,
+        'property_id': data['property_id'],
+        'property_address': data['property_info'].get('address', 'Не указан')
     }
-    logging.info(f"Попытка сохранить заявку: {request_data}")
-
-    # Сохранение в Google Sheets
+    
     try:
-        save_request(request_data)
-        logging.info("Заявка успешно сохранена в Google Sheets")
-    except Exception as e:
-        logging.error(f"Ошибка при сохранении заявки в Google Sheets: {e}")
-        await message.answer("Ошибка при сохранении заявки. Попробуйте позже.", reply_markup=get_main_menu())
-        await state.clear()
-        return
+        # Сохраняем заявку в Google Sheets
+        await sheets_service.save_request(request_data)
+        
+        # Формируем сообщение об успешной подаче заявки
+        success_message = (
+            f"✅ <b>Заявка успешно подана!</b>\n\n"
+            f"📋 <b>Ваши данные:</b>\n"
+            f"👤 Имя: {data['user_name']}\n"
+            f"📱 Телефон: {normalized_phone}\n"
+            f"🏠 Объект: {data['property_info'].get('address', 'Не указан')}\n\n"
+            f"⏰ Наш менеджер свяжется с вами в ближайшее время для согласования времени просмотра.\n\n"
+            f"Спасибо за интерес к нашим объектам!"
+        )
+        
+        await message.reply(
+            success_message,
+            reply_markup=create_main_keyboard(),
+            parse_mode='HTML'
+        )
+        
+        # Отправляем уведомление администратору
+        await notify_admin_about_request(message, request_data, data['property_info'])
+        
+        logger.info(f"Заявка успешно обработана от пользователя {message.from_user.id}")
+        
+    except ServiceError as e:
+        logger.error(f"Ошибка при сохранении заявки: {e}")
+        await message.reply(
+            f"❌ Произошла ошибка при подаче заявки. Попробуйте еще раз или свяжитесь с поддержкой.",
+            reply_markup=create_main_keyboard()
+        )
+    
+    # Очищаем состояние после завершения процесса
+    await state.clear()
 
-    # Уведомление админу
-    if ADMIN_ID and isinstance(ADMIN_ID, (list, tuple)) and ADMIN_ID:
+
+async def notify_admin_about_request(message: Message, request_data: dict, property_info: dict):
+    """
+    Отправляет уведомление администратору о новой заявке.
+    Эта функция изолирована для лучшего тестирования и повторного использования.
+    """
+    if not ADMIN_ID:
+        return
+    
+    try:
         admin_message = (
-            f"Новая заявка от пользователя {message.from_user.id} (@{message.from_user.username or 'no_username'}):\n"
-            f"Имя: {request_data['name']}\nТелефон: {request_data['phone']}\nТип: {request_data['property_type']}\n"
-            f"Сделка: {request_data['deal_type']}\nРайон: {request_data['district']}\nБюджет: {request_data['budget']}\n"
-            f"Комнаты: {request_data['rooms']}\nКомментарий: {request_data['comments']}"
+            f"🔥 <b>Новая заявка на просмотр!</b>\n\n"
+            f"👤 <b>Клиент:</b>\n"
+            f"• ID: {request_data['user_id']}\n"
+            f"• Username: @{request_data['username']}\n"
+            f"• Имя: {request_data['user_name']}\n"
+            f"• Телефон: {request_data['phone']}\n\n"
+            f"🏠 <b>Объект:</b>\n"
+            f"• ID: {request_data['property_id']}\n"
+            f"• Адрес: {request_data['property_address']}\n"
+            f"• Цена: {property_info.get('price', 'Не указана')}\n\n"
+            f"⏰ Время подачи: {request_data['timestamp']}"
         )
-        try:
-            await message.bot.send_message(ADMIN_ID[0], admin_message)
-            logging.info(f"Уведомление админу отправлено для пользователя {message.from_user.id}")
-        except Exception as e:
-            logging.error(f"Ошибка при отправке уведомления админу: {e}")
-
-    if listing_exists:
-        current_listing_index = data.get('current_listing_index', 0)
-        listing = filtered_listings[current_listing_index]
-        photo_urls = (
-            [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-            if isinstance(listing.get('photo_url'), str) else
-            [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
+        
+        await message.bot.send_message(
+            ADMIN_ID,
+            admin_message,
+            parse_mode='HTML'
         )
-        message_text = f"Ваш комментарий сохранён. Заявка успешно отправлена!\n\nОбъект {current_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing.get('description', 'Нет описания')}\nЦена: {listing['price']} ₽"
-        keyboard = get_listing_menu(
-            listing_exists=True,
-            comments_provided=True,
-            has_next_listing=current_listing_index < len(filtered_listings) - 1,
-            listing_index=current_listing_index,
-            photo_index=data.get('current_photo_index', 0),
-            total_photos=len(photo_urls),
-            total_listings=len(filtered_listings),
-            listing_id=listing['id']
-        )
-        if photo_urls:
-            await message.answer_photo(photo=photo_urls[data.get('current_photo_index', 0)], caption=message_text, reply_markup=keyboard)
-        else:
-            await message.answer(message_text, reply_markup=keyboard)
-    else:
-        message_text = "Ваш комментарий сохранён. Заявка успешно отправлена! Объект с указанными параметрами не найден. Риэлтор свяжется с вами."
-        await message.answer(message_text, reply_markup=get_main_menu())
-
-    await state.clear()
-    await asyncio.sleep(0.5)
-    await message.delete()
-
-@router.callback_query(F.data.startswith("next_photo_"))
-async def next_photo(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await callback.answer("Нет доступных объектов.")
-        return
-    
-    current_index = data.get('current_listing_index', 0)
-    listing = filtered_listings[current_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    )
-    
-    callback_parts = callback.data.split('_')
-    if len(callback_parts) != 4:
-        await callback.answer("Неверный формат команды.")
-        return
-    new_listing_index = int(callback_parts[2])
-    new_photo_index = int(callback_parts[3])
-    
-    if new_photo_index >= len(photo_urls):
-        await callback.answer("Больше нет фотографий.")
-        return
-    
-    await state.update_data(current_listing_index=new_listing_index, current_photo_index=new_photo_index)
-    
-    await callback.message.delete()
-    await callback.message.answer_photo(
-        photo=photo_urls[new_photo_index],
-        caption=f"Объект {new_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing['description']}\nЦена: {listing['price']} ₽\nФото {new_photo_index + 1}/{len(photo_urls)}",
-        reply_markup=get_listing_menu(
-            listing_exists=True,
-            comments_provided=bool(data.get('comments')),
-            has_next_listing=new_listing_index < len(filtered_listings) - 1,
-            listing_index=new_listing_index,
-            photo_index=new_photo_index,
-            total_photos=len(photo_urls),
-            total_listings=len(filtered_listings),
-            listing_id=listing['id']
-        )
-    )
-    logging.info(f"Отправлено фото {new_photo_index + 1} для объекта ID {listing['id']} пользователю {callback.from_user.id}")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("prev_photo_"))
-async def prev_photo(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await callback.answer("Нет доступных объектов.")
-        return
-    
-    current_index = data.get('current_listing_index', 0)
-    listing = filtered_listings[current_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    )
-    
-    callback_parts = callback.data.split('_')
-    if len(callback_parts) != 4:
-        await callback.answer("Неверный формат команды.")
-        return
-    new_listing_index = int(callback_parts[2])
-    new_photo_index = int(callback_parts[3])
-    
-    if new_photo_index < 0:
-        await callback.answer("Это первое фото.")
-        return
-    
-    await state.update_data(current_listing_index=new_listing_index, current_photo_index=new_photo_index)
-    
-    await callback.message.delete()
-    await callback.message.answer_photo(
-        photo=photo_urls[new_photo_index],
-        caption=f"Объект {new_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing['description']}\nЦена: {listing['price']} ₽\nФото {new_photo_index + 1}/{len(photo_urls)}",
-        reply_markup=get_listing_menu(
-            listing_exists=True,
-            comments_provided=bool(data.get('comments')),
-            has_next_listing=new_listing_index < len(filtered_listings) - 1,
-            listing_index=new_listing_index,
-            photo_index=new_photo_index,
-            total_photos=len(photo_urls),
-            total_listings=len(filtered_listings),
-            listing_id=listing['id']
-        )
-    )
-    logging.info(f"Отправлено фото {new_photo_index + 1} для объекта ID {listing['id']} пользователю {callback.from_user.id}")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("next_listing_"))
-async def next_listing(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await callback.answer("Нет доступных объектов.")
-        return
-    
-    callback_parts = callback.data.split('_')
-    if len(callback_parts) != 3:
-        await callback.answer("Неверный формат команды.")
-        return
-    new_listing_index = int(callback_parts[2])
-    
-    if new_listing_index >= len(filtered_listings):
-        await callback.answer("Больше нет объектов.")
-        return
-    
-    listing = filtered_listings[new_listing_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    )
-    await state.update_data(current_listing_index=new_listing_index, current_photo_index=0)
-    
-    await callback.message.delete()
-    message_text = f"Объект {new_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing['description']}\nЦена: {listing['price']} ₽"
-    keyboard = get_listing_menu(
-        listing_exists=True,
-        comments_provided=bool(data.get('comments')),
-        has_next_listing=new_listing_index < len(filtered_listings) - 1,
-        listing_index=new_listing_index,
-        photo_index=0,
-        total_photos=len(photo_urls),
-        total_listings=len(filtered_listings),
-        listing_id=listing['id']
-    )
-    await callback.message.answer(message_text, reply_markup=keyboard)
-    if photo_urls:
-        await callback.message.answer_photo(photo=photo_urls[0])
-    logging.info(f"Отправлен объект {new_listing_index + 1} (ID: {listing['id']}) пользователю {callback.from_user.id}")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("prev_listing_"))
-async def prev_listing(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    if not filtered_listings:
-        await callback.answer("Нет доступных объектов.")
-        return
-    
-    callback_parts = callback.data.split('_')
-    if len(callback_parts) != 3:
-        await callback.answer("Неверный формат команды.")
-        return
-    new_listing_index = int(callback_parts[2])
-    
-    if new_listing_index < 0:
-        await callback.answer("Это первый объект.")
-        return
-    
-    listing = filtered_listings[new_listing_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    )
-    await state.update_data(current_listing_index=new_listing_index, current_photo_index=0)
-    
-    await callback.message.delete()
-    message_text = f"Объект {new_listing_index + 1}/{len(filtered_listings)}\nID: {listing['id']}\n{listing['description']}\nЦена: {listing['price']} ₽"
-    keyboard = get_listing_menu(
-        listing_exists=True,
-        comments_provided=bool(data.get('comments')),
-        has_next_listing=new_listing_index < len(filtered_listings) - 1,
-        listing_index=new_listing_index,
-        photo_index=0,
-        total_photos=len(photo_urls),
-        total_listings=len(filtered_listings),
-        listing_id=listing['id']
-    )
-    await callback.message.answer(message_text, reply_markup=keyboard)
-    if photo_urls:
-        await callback.message.answer_photo(photo=photo_urls[0])
-    logging.info(f"Отправлен объект {new_listing_index + 1} (ID: {listing['id']}) пользователю {callback.from_user.id}")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("interested_"))
-async def interested(callback: CallbackQuery, state: FSMContext):
-    listing_id = callback.data.replace("interested_", "")
-    data = await state.get_data()
-    filtered_listings = data.get('filtered_listings', [])
-    listing = next((l for l in filtered_listings if str(l['id']) == listing_id), None)
-    if not listing:
-        await callback.answer("Объект не найден.")
-        return
-    
-    await callback.bot.send_message(
-        ADMIN_ID[0],
-        f"Пользователь {callback.from_user.id} (@{callback.from_user.username or 'no_username'}) заинтересован в объекте ID: {listing_id}\n{listing['description']}\nЦена: {listing['price']} ₽"
-    )
-    # Запрос комментария
-    current_listing_index = data.get('current_listing_index', 0)
-    listing = filtered_listings[current_listing_index]
-    photo_urls = (
-        [url.strip() for url in listing.get('photo_url', '').split(',') if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-        if isinstance(listing.get('photo_url'), str) else
-        [url.strip() for url in listing.get('photo_url', []) if url.strip().startswith('http') and url.strip().endswith(('.jpg', '.jpeg', '.png'))]
-    )
-    message_text = f"Ваш интерес к объекту ID: {listing_id} зафиксирован.\n\nПожалуйста, введите комментарий к заявке (или напишите 'Без комментариев'):"
-    keyboard = get_listing_menu(
-        listing_exists=True,
-        comments_provided=False,
-        has_next_listing=len(filtered_listings) > 1,
-        listing_index=current_listing_index,
-        photo_index=data.get('current_photo_index', 0),
-        total_photos=len(photo_urls),
-        total_listings=len(filtered_listings),
-        listing_id=listing['id']
-    )
-    await callback.message.answer(message_text, reply_markup=keyboard)
-    if photo_urls:
-        await callback.message.answer_photo(photo=photo_urls[data.get('current_photo_index', 0)])
-    await callback.answer("Ваш интерес зафиксирован. Пожалуйста, введите комментарий.")
-    logging.info(f"Пользователь {callback.from_user.id} заинтересован в объекте ID: {listing_id}")
-
-@router.callback_query(lambda c: c.data == "clear_chat")
-async def clear_chat(callback: types.CallbackQuery, state: FSMContext):
-    logging.info(f"Очистка чата от пользователя {callback.from_user.id}")
-    try:
-        await callback.message.delete()
+        
     except Exception as e:
-        logging.error(f"Ошибка при удалении сообщения: {e}")
-    await state.clear()
+        logger.error(f"Ошибка отправки уведомления администратору: {e}")
+
+
+@router.callback_query(F.data == "cancel_request")
+@handle_error(error_handler)
+async def cancel_request_callback(callback: CallbackQuery, state: FSMContext):
+    """Обработчик отмены заявки через callback кнопку"""
+    await cancel_request(callback.message, state, is_callback=True)
     await callback.answer()
 
-@router.callback_query(lambda c: c.data.startswith("return_to_menu"))
-async def return_to_menu(callback: CallbackQuery, state: FSMContext):
+
+async def cancel_request(message: Message, state: FSMContext, is_callback: bool = False):
+    """
+    Универсальная функция отмены процесса подачи заявки.
+    Может быть вызвана как из текстового сообщения, так и из callback.
+    """
     await state.clear()
-    await callback.message.answer("Вы вернулись в главное меню.", reply_markup=get_main_menu())
-    await callback.answer()
+    
+    cancel_message = (
+        f"❌ Подача заявки отменена.\n\n"
+        f"Вы можете начать заново или выбрать другой объект."
+    )
+    
+    if is_callback:
+        await message.edit_text(
+            cancel_message,
+            reply_markup=create_main_keyboard()
+        )
+    else:
+        await message.reply(
+            cancel_message,
+            reply_markup=create_main_keyboard()
+        )
+
+
+@router.message(F.text.lower().in_(['отмена', '/cancel']))
+@handle_error(error_handler)
+async def handle_cancel_command(message: Message, state: FSMContext):
+    """
+    Обработчик команд отмены в любом состоянии.
+    Позволяет пользователю выйти из процесса подачи заявки в любой момент.
+    """
+    current_state = await state.get_state()
+    
+    if current_state and current_state.startswith('RequestStates'):
+        await cancel_request(message, state)
+    else:
+        await message.reply(
+            "Нет активных процессов для отмены.",
+            reply_markup=create_main_keyboard()
+        )
