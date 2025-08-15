@@ -9,7 +9,7 @@
 
 Каждый модуль содержит роутер, который регистрируется в главном диспетчере.
 """
-
+from services.error_handler import error_handler
 # Импортируем все роутеры для удобства использования в главном файле
 from .admin import router as admin_router
 from .request import router as request_router  

@@ -18,7 +18,6 @@ from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
 
-
 class ListingService:
     """
     Сервис для работы с объектами недвижимости.
@@ -38,10 +37,8 @@ class ListingService:
         """
         logger.info(f"Поиск объектов с критериями: {search_criteria}")
         
-        # Преобразуем критерии поиска в формат фильтров для Google Sheets
         filters = ListingService._convert_search_criteria_to_filters(search_criteria)
         
-        # Получаем отфильтрованные объекты
         listings = await google_sheets_service.get_listings(filters)
         
         logger.info(f"Найдено {len(listings)} объектов по критериям")
@@ -60,30 +57,24 @@ class ListingService:
         """
         filters = {}
         
-        # Тип недвижимости
         if 'property_type' in criteria:
             property_type = criteria['property_type'].replace('property_type_', '') if criteria['property_type'].startswith('property_type_') else criteria['property_type']
             filters['property_type'] = property_type
         
-        # Тип сделки
         if 'deal_type' in criteria:
             deal_type = criteria['deal_type'].replace('deal_type_', '') if criteria['deal_type'].startswith('deal_type_') else criteria['deal_type']
             filters['deal_type'] = deal_type
         
-        # Район
         if 'district' in criteria:
             district = criteria['district'].replace('district_', '') if criteria['district'].startswith('district_') else criteria['district']
             filters['district'] = district
         
-        # Количество комнат
         if 'rooms' in criteria and criteria['rooms']:
             filters['rooms'] = criteria['rooms']
         
-        # Бюджет - извлекаем максимальную цену
         if 'budget' in criteria:
             budget_str = criteria['budget'].replace('budget_', '') if criteria['budget'].startswith('budget_') else criteria['budget']
             try:
-                # Извлекаем максимальное значение из диапазона (например, "5000000-10000000" -> 10000000)
                 if '-' in budget_str:
                     max_price = budget_str.split('-')[-1]
                 else:
@@ -129,12 +120,10 @@ class ListingService:
         listing = filtered_listings[listing_index]
         photo_urls = DataValidator.validate_photo_urls(listing.get('photo_url', []))
         
-        # Формируем текст сообщения
         message_text = ListingService._format_listing_message(
             listing, listing_index + 1, len(filtered_listings)
         )
         
-        # Создаем клавиатуру для навигации
         keyboard = get_listing_menu(
             listing_exists=True,
             comments_provided=comments_provided,
@@ -146,10 +135,8 @@ class ListingService:
             listing_id=listing['id']
         )
         
-        # Отправляем сообщение с текстом
         await message.answer(message_text, reply_markup=keyboard)
         
-        # Отправляем фотографию, если есть
         if photo_urls and photo_index < len(photo_urls):
             try:
                 await message.answer_photo(photo=photo_urls[photo_index])
@@ -186,6 +173,26 @@ class ListingService:
         message += f"\n📝 {listing.get('description', 'Описание не указано')}"
         
         return message
+    
+    @staticmethod
+    def get_property_photos(listing: Dict[str, Any]) -> List[str]:
+        """
+        Получает список URL фотографий для объекта недвижимости.
+        
+        Args:
+            listing: Словарь с информацией об объекте
+        
+        Returns:
+            List[str]: Список URL фотографий
+        """
+        try:
+            photos = listing.get('photo_url', [])
+            if isinstance(photos, str):
+                photos = photos.split(',') if photos else []
+            return [photo.strip() for photo in photos if photo.strip()]
+        except Exception as e:
+            logger.error(f"Ошибка получения фотографий объекта: {e}")
+            return []
     
     @staticmethod
     async def handle_photo_navigation(
@@ -227,25 +234,21 @@ class ListingService:
             await callback.answer("Больше нет фотографий.")
             return
         
-        # Обновляем индексы в состоянии
         await state.update_data(
             current_listing_index=target_listing_index,
             current_photo_index=target_photo_index
         )
         
-        # Удаляем предыдущее сообщение и отправляем новое
         try:
             await callback.message.delete()
         except Exception:
-            pass  # Игнорируем ошибки удаления
+            pass
         
-        # Формируем caption для фотографии
         caption = ListingService._format_photo_caption(
             listing, target_listing_index + 1, len(filtered_listings),
             target_photo_index + 1, len(photo_urls)
         )
         
-        # Создаем клавиатуру
         keyboard = get_listing_menu(
             listing_exists=True,
             comments_provided=bool(data.get('comments')),
@@ -330,19 +333,16 @@ class ListingService:
             await callback.answer("Больше нет объектов.")
             return
         
-        # Обновляем состояние
         await state.update_data(
             current_listing_index=target_listing_index,
-            current_photo_index=0  # Сбрасываем на первое фото
+            current_photo_index=0
         )
         
-        # Удаляем предыдущие сообщения
         try:
             await callback.message.delete()
         except Exception:
             pass
         
-        # Показываем новый объект
         await ListingService.show_listing(
             callback.message, 
             state, 
@@ -361,43 +361,40 @@ class ListingService:
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
         Обрабатывает выражение интереса пользователя к объекту.
-        
-        Args:
-            callback: Объект callback запроса
-            state: Контекст состояния FSM
-            listing_id: ID объекта, к которому проявлен интерес
-            
-        Returns:
-            Tuple[успех операции, данные объекта]
         """
+        from handlers.admin import log_user_action
+        
         data = await state.get_data()
         filtered_listings = data.get('filtered_listings', [])
         
-        # Находим объект по ID
         listing = next((l for l in filtered_listings if str(l['id']) == str(listing_id)), None)
         
         if not listing:
             await callback.answer("Объект не найден.")
             return False, None
         
-        # Отправляем уведомление администратору
+        log_user_action(callback.from_user.id, callback.from_user.username, f"Показано интерес к объекту ID: {listing_id}")
+        
         if ADMIN_ID:
             try:
                 admin_message = (
                     f"🔥 Новый интерес к объекту!\n\n"
                     f"👤 Пользователь: {callback.from_user.id} (@{callback.from_user.username or 'no_username'})\n"
-                    f"🆔 ID объекта: {listing_id}\n"
-                    f"🏢 Тип: {listing['property_type']}\n"
+                    f"🆔 Объект ID: {listing_id}\n"
+                    f"🏠 Тип: {listing['property_type']}\n"
                     f"📍 Район: {listing['district']}\n"
                     f"💰 Цена: {listing['price']:,.0f} ₽\n\n"
-                    f"📝 Описание: {listing.get('description', 'Не указано')}"
+                    f"📝 Описание:\n{listing.get('description', 'Описание не указано')}"
                 )
                 
-                await callback.bot.send_message(ADMIN_ID[0], admin_message)
-                logger.info(f"Уведомление об интересе отправлено админу для объекта {listing_id}")
+                for admin_id in ADMIN_ID:
+                    await callback.bot.send_message(admin_id, admin_message)
+                logger.info(f"Уведомление об интересе к объекту {listing_id} отправлено админу")
                 
             except Exception as e:
                 logger.error(f"Ошибка при отправке уведомления админу: {e}")
         
-        await callback.answer("Ваш интерес зафиксирован! Пожалуйста, введите комментарий.")
+        await callback.answer("Ваш интерес зафиксирован!")
+        logger.info(f"Пользователь {callback.from_user.id} заинтересован в объекте {listing_id}")
+        
         return True, listing

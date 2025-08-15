@@ -3,6 +3,15 @@
 Эти исключения помогают обрабатывать специфические ошибки более точно и информативно.
 """
 
+# Базовые исключения
+class ValidationError(Exception):
+    """Базовое исключение для ошибок валидации данных."""
+    pass
+
+class ServiceError(Exception):
+    """Базовое исключение для ошибок внешних сервисов."""
+    pass
+
 class BotException(Exception):
     """
     Базовое исключение для всех ошибок бота.
@@ -13,8 +22,7 @@ class BotException(Exception):
         self.message = message
         self.user_id = user_id
 
-
-class GoogleSheetsError(BotException):
+class GoogleSheetsError(ServiceError):
     """
     Исключение для ошибок работы с Google Sheets.
     Возникает при проблемах с аутентификацией, сетевых ошибках или проблемах со структурой таблицы.
@@ -23,18 +31,6 @@ class GoogleSheetsError(BotException):
         super().__init__(message)
         self.operation = operation  # Например: "read", "write", "authenticate"
         self.sheet_name = sheet_name
-
-
-class ValidationError(BotException):
-    """
-    Исключение для ошибок валидации пользовательских данных.
-    Используется когда пользователь вводит некорректные данные.
-    """
-    def __init__(self, message: str, field: str = None, value: str = None):
-        super().__init__(message)
-        self.field = field  # Поле, которое не прошло валидацию
-        self.value = value  # Некорректное значение
-
 
 class ListingNotFoundError(BotException):
     """
@@ -47,7 +43,6 @@ class ListingNotFoundError(BotException):
         super().__init__(message)
         self.listing_id = listing_id
 
-
 class StateError(BotException):
     """
     Исключение для ошибок управления состояниями FSM.
@@ -58,8 +53,7 @@ class StateError(BotException):
         self.current_state = current_state
         self.expected_state = expected_state
 
-
-class PhotoProcessingError(BotException):
+class PhotoProcessingError(ServiceError):
     """
     Исключение для ошибок обработки фотографий объектов недвижимости.
     Возникает при проблемах с загрузкой или обработкой изображений.

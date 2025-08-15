@@ -7,7 +7,7 @@
 import re
 from typing import List, Optional, Union
 from urllib.parse import urlparse
-from config import MAX_NAME_LENGTH, MAX_COMMENT_LENGTH, SUPPORTED_IMAGE_FORMATS
+from config import MAX_COMMENT_LENGTH, SUPPORTED_IMAGE_FORMATS
 from exceptions.custom_exceptions import ValidationError
 
 
@@ -21,7 +21,6 @@ class DataValidator:
     def validate_name(name: str) -> str:
         """
         Проверяет корректность имени пользователя.
-        Имя должно содержать только буквы, пробелы и некоторые специальные символы.
         
         Args:
             name: Строка с именем для проверки
@@ -33,26 +32,20 @@ class DataValidator:
             ValidationError: Если имя не соответствует требованиям
         """
         if not name or not name.strip():
-            raise ValidationError("Имя не может быть пустым", "name", name)
+            raise ValidationError("Имя не может быть пустым")
         
-        # Удаляем лишние пробелы и приводим к нормальному виду
         cleaned_name = name.strip()
         
-        if len(cleaned_name) > MAX_NAME_LENGTH:
-            raise ValidationError(
-                f"Имя слишком длинное (максимум {MAX_NAME_LENGTH} символов)", 
-                "name", 
-                name
-            )
+        # Проверяем длину имени
+        if len(cleaned_name) < 2:
+            raise ValidationError("Имя слишком короткое (минимум 2 символа)")
         
-        # Проверяем, что имя содержит только допустимые символы
-        # Разрешены: буквы всех алфавитов, пробелы, дефисы, апострофы
-        if not re.match(r"^[\w\s\-']+$", cleaned_name, re.UNICODE):
-            raise ValidationError(
-                "Имя может содержать только буквы, пробелы, дефисы и апострофы", 
-                "name", 
-                name
-            )
+        if len(cleaned_name) > 50:
+            raise ValidationError("Имя слишком длинное (максимум 50 символов)")
+        
+        # Проверяем, что имя содержит только буквы, пробелы и дефисы
+        if not re.match(r'^[а-яА-ЯёЁa-zA-Z\s\-]+$', cleaned_name):
+            raise ValidationError("Имя может содержать только буквы, пробелы и дефисы")
         
         return cleaned_name
     
@@ -60,7 +53,6 @@ class DataValidator:
     def validate_phone(phone: str) -> str:
         """
         Валидирует и нормализует номер телефона.
-        Поддерживает различные форматы российских номеров.
         
         Args:
             phone: Строка с номером телефона
@@ -72,31 +64,27 @@ class DataValidator:
             ValidationError: Если номер некорректен
         """
         if not phone or not phone.strip():
-            raise ValidationError("Номер телефона не может быть пустым", "phone", phone)
+            raise ValidationError("Номер телефона не может быть пустым")
         
-        # Удаляем все символы кроме цифр и плюса
+        # Удаляем все символы кроме цифр и знака +
         cleaned_phone = re.sub(r'[^\d+]', '', phone.strip())
         
-        # Проверяем базовые требования к длине
-        if len(cleaned_phone) < 10:
-            raise ValidationError("Слишком короткий номер телефона", "phone", phone)
-        
-        if len(cleaned_phone) > 15:
-            raise ValidationError("Слишком длинный номер телефона", "phone", phone)
-        
-        # Нормализация российских номеров
-        if cleaned_phone.startswith('8') and len(cleaned_phone) == 11:
+        # Проверяем базовый формат российского номера
+        if cleaned_phone.startswith('+7'):
+            if len(cleaned_phone) != 12:  # +7 + 10 цифр
+                raise ValidationError("Некорректный формат российского номера")
+        elif cleaned_phone.startswith('8'):
+            if len(cleaned_phone) != 11:  # 8 + 10 цифр
+                raise ValidationError("Некорректный формат российского номера")
+            # Заменяем 8 на +7
             cleaned_phone = '+7' + cleaned_phone[1:]
-        elif cleaned_phone.startswith('7') and len(cleaned_phone) == 11:
+        elif cleaned_phone.startswith('7'):
+            if len(cleaned_phone) != 11:  # 7 + 10 цифр
+                raise ValidationError("Некорректный формат российского номера")
+            # Добавляем +
             cleaned_phone = '+' + cleaned_phone
-        elif not cleaned_phone.startswith('+'):
-            # Если номер без кода страны, добавляем российский
-            if len(cleaned_phone) == 10:
-                cleaned_phone = '+7' + cleaned_phone
-        
-        # Финальная проверка формата
-        if not re.match(r'^\+\d{10,14}$', cleaned_phone):
-            raise ValidationError("Неверный формат номера телефона", "phone", phone)
+        else:
+            raise ValidationError("Номер должен начинаться с +7, 8 или 7")
         
         return cleaned_phone
     
@@ -275,3 +263,14 @@ class DataValidator:
             
         except (ValueError, TypeError):
             raise ValidationError(f"Некорректный формат цены: {price}")
+
+
+# Функции для обратной совместимости (если они используются в других местах)
+def validate_phone(phone: str) -> str:
+    """Функция-обертка для метода класса DataValidator."""
+    return DataValidator.validate_phone(phone)
+
+
+def validate_name(name: str) -> str:
+    """Функция-обертка для метода класса DataValidator."""
+    return DataValidator.validate_name(name)

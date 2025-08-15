@@ -1,6 +1,7 @@
+# Файл: states/search.py
 """
 Состояния FSM для процесса поиска недвижимости.
-Эти состояния управляют процессом поиска объектов без оформления заявки.
+Эти состояния отслеживают этапы поискового процесса без подачи заявки.
 """
 
 from aiogram.fsm.state import State, StatesGroup
@@ -8,20 +9,18 @@ from aiogram.fsm.state import State, StatesGroup
 
 class SearchStates(StatesGroup):
     """
-    Группа состояний для поиска недвижимости.
-    Отличается от RequestStates тем, что не требует персональных данных
-    и предназначена только для просмотра объектов.
+    Группа состояний для процесса поиска недвижимости.
+    Используется когда пользователь просто ищет объекты без намерения подавать заявку.
     """
-    
-    # Критерии поиска
-    selecting_property_type = State()    # Выбор типа недвижимости
-    selecting_deal_type = State()        # Выбор типа сделки  
-    selecting_district = State()         # Выбор района
-    selecting_budget = State()           # Выбор бюджета
-    selecting_rooms = State()            # Выбор количества комнат
+    # Параметры поиска
+    awaiting_property_type = State("Ожидание выбора типа недвижимости")
+    awaiting_deal_type = State("Ожидание выбора типа сделки")
+    awaiting_district = State("Ожидание выбора района")
+    awaiting_budget = State("Ожидание выбора бюджета")
+    awaiting_rooms = State("Ожидание выбора количества комнат")
     
     # Просмотр результатов
-    viewing_results = State()            # Просмотр найденных объектов
+    viewing_listings = State("Просмотр найденных объектов")
     
-    # Выражение интереса (переход к заявке)
-    expressing_interest = State()        # Пользователь выразил интерес к объекту
+    # Переход к заявке (если пользователь захочет подать заявку после поиска)
+    transitioning_to_request = State("Переход к подаче заявки")

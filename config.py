@@ -1,3 +1,8 @@
+"""
+Конфигурация риэлторского бота.
+Содержит все настройки проекта, включая Telegram, Google Sheets и логирование.
+"""
+
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -38,7 +43,7 @@ if not CREDENTIALS_FILE.exists():
     )
 
 # Настройки логирования
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOGGING_LEVEL = os.getenv("LOGGING_LEVEL", "INFO").upper()  # Исправлено на LOGGING_LEVEL
 LOG_FILE = os.getenv("LOG_FILE", "bot.log")
 
 # Настройки базы данных для логов действий пользователей
@@ -56,8 +61,8 @@ GOOGLE_SHEETS_SCOPE = [
 ]
 
 # Названия листов в Google Sheets
-LISTINGS_SHEET_NAME = "listings"
-REQUESTS_SHEET_NAME = "requests"
+LISTINGS_SHEET_NAME = os.getenv("PROPERTIES_SHEET_NAME", "Listings")  # Исправлено на PROPERTIES_SHEET_NAME
+REQUESTS_SHEET_NAME = os.getenv("REQUESTS_SHEET_NAME", "Requests")
 
 # Настройки для retry логики при работе с внешними API
 MAX_RETRIES = 3

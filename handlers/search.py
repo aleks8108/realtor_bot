@@ -14,34 +14,26 @@ from aiogram.fsm.context import FSMContext
 from states.search import SearchStates
 from services.sheets import GoogleSheetsService
 from services.listings import ListingService
-from services.error_handler import handle_errors, ErrorHandler
-from utils.keyboards import (
-    create_main_keyboard, 
-    create_property_keyboard, 
-    create_navigation_keyboard
-)
+from services.error_handler import error_handler
+from utils.keyboards import create_main_keyboard, get_listing_menu, create_navigation_keyboard
 from exceptions.custom_exceptions import ServiceError
+from handlers.admin import log_user_action
+from states.request import RequestStates
+from utils.keyboards import get_property_type_keyboard, get_contact_keyboard
 
-# Создаем роутер для обработчиков поиска
 router = Router()
 
-# Инициализируем сервисы
 sheets_service = GoogleSheetsService()
-listing_service = ListingService(sheets_service)
-error_handler = ErrorHandler()
-
 logger = logging.getLogger(__name__)
 
-
 @router.message(F.text == "🔍 Поиск объектов")
-@handle_errors(error_handler)
+@error_handler(operation_name="Начало поиска объектов")
 async def start_search(message: Message, state: FSMContext):
     """
     Начинает процесс поиска объектов недвижимости.
     Загружает все доступные объекты и показывает первый из них.
     """
     try:
-        # Получаем все объекты недвижимости
         properties = await sheets_service.get_all_properties()
         
         if not properties:
@@ -52,19 +44,17 @@ async def start_search(message: Message, state: FSMContext):
             )
             return
         
-        # Сохраняем список объектов и текущий индекс в состоянии
         await state.update_data(
             properties=properties,
             current_index=0
         )
         
-        # Показываем первый объект
         await show_property_at_index(message, state, 0, is_new_search=True)
         
-        # Устанавливаем состояние просмотра
-        await state.set_state(SearchStates.viewing_properties)
+        await state.set_state(SearchStates.viewing_listings)
         
         logger.info(f"Пользователь {message.from_user.id} начал поиск. Найдено {len(properties)} объектов")
+        log_user_action(message.from_user.id, message.from_user.username, "Начало поиска объектов")
         
     except ServiceError as e:
         logger.error(f"Ошибка при загрузке объектов: {e}")
@@ -72,7 +62,6 @@ async def start_search(message: Message, state: FSMContext):
             "❌ Произошла ошибка при загрузке объектов. Попробуйте позже.",
             reply_markup=create_main_keyboard()
         )
-
 
 async def show_property_at_index(
     message: Message, 
@@ -83,8 +72,6 @@ async def show_property_at_index(
 ):
     """
     Показывает объект недвижимости по указанному индексу.
-    Эта функция централизует логику отображения объектов и может использоваться
-    как для новых поисков, так и для навигации между объектами.
     """
     data = await state.get_data()
     properties = data.get('properties', [])
@@ -98,24 +85,25 @@ async def show_property_at_index(
     
     current_property = properties[index]
     
-    # Обновляем текущий индекс в состоянии
     await state.update_data(current_index=index)
     
-    # Форматируем сообщение об объекте
-    property_message = listing_service.format_property_message(
+    property_message = ListingService._format_listing_message(
         current_property,
-        index + 1,  # Номер для отображения (начинается с 1)
-        len(properties)  # Общее количество объектов
+        index + 1,
+        len(properties)
     )
     
-    # Создаем клавиатуру для текущего объекта
-    keyboard = create_property_keyboard(
-        property_id=current_property.get('id'),
-        current_index=index,
-        total_count=len(properties)
+    keyboard = get_listing_menu(
+        listing_exists=True,
+        comments_provided=False,
+        has_next_listing=index < len(properties) - 1,
+        listing_index=index,
+        photo_index=0,
+        total_photos=len(ListingService.get_property_photos(current_property)),
+        total_listings=len(properties),
+        listing_id=str(current_property.get('id'))
     )
     
-    # Отправляем или редактируем сообщение в зависимости от контекста
     if edit_message:
         await message.edit_text(
             property_message,
@@ -123,7 +111,6 @@ async def show_property_at_index(
             parse_mode='HTML'
         )
     else:
-        # Для нового поиска показываем информационное сообщение
         if is_new_search:
             intro_message = (
                 f"🏠 Найдено <b>{len(properties)}</b> объектов недвижимости\n\n"
@@ -136,16 +123,75 @@ async def show_property_at_index(
             reply_markup=keyboard,
             parse_mode='HTML'
         )
+    log_user_action(message.from_user.id, message.from_user.username, f"Просмотр объекта #{index + 1}")
 
+# Обработчики callback_query
+@router.callback_query(F.data == "search_property")
+@error_handler(operation_name="Запуск поиска через инлайн-кнопку")
+async def process_search_property(callback: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает нажатие инлайн-кнопки '🔍 Поиск недвижимости'.
+    Запускает процесс поиска с начальным состоянием.
+    """
+    await state.set_state(SearchStates.awaiting_property_type)
+    await callback.message.answer(
+        "Выберите тип недвижимости:",
+        reply_markup=get_property_type_keyboard()
+    )
+    await callback.answer("Начало поиска...")
+    logger.info(f"Пользователь {callback.from_user.id} запустил поиск через инлайн-кнопку")
+
+@router.callback_query(F.data == "create_request")
+@error_handler(operation_name="Запуск подачи заявки через инлайн-кнопку")
+async def process_create_request(callback: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает нажатие инлайн-кнопки '📝 Оставить заявку'.
+    Переходит к началу процесса подачи заявки.
+    """
+    await state.set_state(RequestStates.name)
+    await callback.message.answer("Введите ваше имя:")
+    await callback.answer("Начало подачи заявки...")
+    logger.info(f"Пользователь {callback.from_user.id} начал подачу заявки")
+
+@router.callback_query(F.data == "contact_realtor")
+@error_handler(operation_name="Показ контактов через инлайн-кнопку")
+async def process_contact_realtor(callback: CallbackQuery):
+    """
+    Обрабатывает нажатие инлайн-кнопки '📞 Связаться с риэлтором'.
+    Отображает контактную информацию.
+    """
+    contacts_message = (
+        f"📞 <b>Контактная информация</b>\n\n"
+        f"🏢 <b>Наша компания</b>\n"
+        f"Агентство недвижимости 'ДомСервис'\n\n"
+        f"📱 <b>Телефоны:</b>\n"
+        f"• Отдел продаж: +7 (XXX) XXX-XX-XX\n"
+        f"• Отдел аренды: +7 (XXX) XXX-XX-XX\n"
+        f"• Контактный номер: +7 905 476 44 48\n\n"
+        f"🕐 <b>Режим работы:</b>\n"
+        f"Пн-Пт: 9:00 - 19:00\n"
+        f"Сб-Вс: 10:00 - 17:00\n\n"
+        f"📍 <b>Адрес офиса:</b>\n"
+        f"г. Москва, ул. Примерная, д. 123\n\n"
+        f"💬 Напишите в Telegram: <a href='https://t.me/aleks8108'>@aleks8108</a>\n"
+        f"📧 Напишите email: <a href='mailto:aleks8108@gmail.com'>aleks8108@gmail.com</a>"
+    )
+    await callback.message.answer(
+        contacts_message,
+        reply_markup=None,  # Убрана клавиатура
+        parse_mode='HTML',
+        disable_web_page_preview=True
+    )
+    await callback.answer("Контакты показаны")
+    logger.info(f"Пользователь {callback.from_user.id} запросил контакты")
 
 @router.callback_query(F.data.startswith("nav_"))
-@handle_errors(error_handler)
+@error_handler(operation_name="Навигация по объектам")
 async def handle_navigation(callback: CallbackQuery, state: FSMContext):
     """
     Обрабатывает навигацию между объектами недвижимости.
-    Поддерживает переходы к следующему, предыдущему, первому и последнему объекту.
     """
-    action = callback.data.split("_")[1]  # Извлекаем действие из callback_data
+    action = callback.data.split("_")[1]
     
     data = await state.get_data()
     properties = data.get('properties', [])
@@ -155,7 +201,6 @@ async def handle_navigation(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Нет доступных объектов", show_alert=True)
         return
     
-    # Определяем новый индекс в зависимости от действия
     if action == "next":
         new_index = min(current_index + 1, len(properties) - 1)
     elif action == "prev":
@@ -168,9 +213,7 @@ async def handle_navigation(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Неизвестное действие", show_alert=True)
         return
     
-    # Проверяем, не находимся ли мы уже на нужном объекте
     if new_index == current_index:
-        # Даем пользователю понять, что он достиг границы списка
         if action in ["next", "last"] and current_index == len(properties) - 1:
             await callback.answer("📍 Это последний объект в списке")
         elif action in ["prev", "first"] and current_index == 0:
@@ -179,7 +222,6 @@ async def handle_navigation(callback: CallbackQuery, state: FSMContext):
             await callback.answer()
         return
     
-    # Показываем объект с новым индексом
     await show_property_at_index(
         callback.message, 
         state, 
@@ -188,31 +230,25 @@ async def handle_navigation(callback: CallbackQuery, state: FSMContext):
     )
     
     await callback.answer()
-
+    log_user_action(callback.from_user.id, callback.from_user.username, f"Навигация к объекту #{new_index + 1}")
 
 @router.callback_query(F.data.startswith("photo_"))
-@handle_errors(error_handler)
+@error_handler(operation_name="Навигация по фотографиям")
 async def handle_photo_navigation(callback: CallbackQuery, state: FSMContext):
     """
     Обрабатывает навигацию по фотографиям текущего объекта.
-    Позволяет пользователю просматривать все доступные фотографии объекта.
     """
     try:
-        # Извлекаем ID объекта и номер фотографии из callback_data
-        # Формат: "photo_123_1" где 123 - ID объекта, 1 - номер фотографии
         parts = callback.data.split("_")
         property_id = int(parts[1])
         photo_index = int(parts[2])
-        
     except (IndexError, ValueError):
         await callback.answer("❌ Ошибка в данных фотографии", show_alert=True)
         return
     
     data = await state.get_data()
     properties = data.get('properties', [])
-    current_index = data.get('current_index', 0)
     
-    # Находим текущий объект
     current_property = None
     for prop in properties:
         if prop.get('id') == property_id:
@@ -223,28 +259,31 @@ async def handle_photo_navigation(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Объект не найден", show_alert=True)
         return
     
-    # Получаем фотографии объекта
-    photos = listing_service.get_property_photos(current_property)
+    photos = ListingService.get_property_photos(current_property)
     
     if not photos or photo_index < 0 or photo_index >= len(photos):
         await callback.answer("❌ Фотография не найдена", show_alert=True)
         return
     
     try:
-        # Отправляем фотографию пользователю
         photo_url = photos[photo_index]
         caption = (
             f"📸 Фотография {photo_index + 1} из {len(photos)}\n"
             f"🏠 {current_property.get('address', 'Адрес не указан')}"
         )
         
-        # Создаем клавиатуру для навигации по фотографиям
-        photo_keyboard = create_navigation_keyboard(
-            property_id=property_id,
-            current_photo=photo_index,
-            total_photos=len(photos),
-            keyboard_type="photo"
-        )
+        nav_config = {
+            'current_page': 0,
+            'total_pages': 1,
+            'has_prev': False,
+            'has_next': False,
+            'photo_index': photo_index,
+            'total_photos': len(photos),
+            'callback_prefix': f"photo_{property_id}",
+            'keyboard_type': 'photo'
+        }
+        
+        photo_keyboard = create_navigation_keyboard(nav_config)
         
         await callback.message.answer_photo(
             photo=photo_url,
@@ -253,23 +292,21 @@ async def handle_photo_navigation(callback: CallbackQuery, state: FSMContext):
         )
         
         await callback.answer()
+        log_user_action(callback.from_user.id, callback.from_user.username, f"Просмотр фото #{photo_index + 1} объекта ID: {property_id}")
         
     except Exception as e:
         logger.error(f"Ошибка отправки фотографии: {e}")
         await callback.answer("❌ Ошибка загрузки фотографии", show_alert=True)
 
-
 @router.callback_query(F.data == "back_to_list")
-@handle_errors(error_handler)
+@error_handler(operation_name="Возврат к списку объектов")
 async def back_to_property_list(callback: CallbackQuery, state: FSMContext):
     """
-    Возвращает пользователя к списку объектов из режима просмотра фотографий
-    или других детальных режимов просмотра.
+    Возвращает пользователя к списку объектов из режима просмотра фотографий.
     """
     data = await state.get_data()
     current_index = data.get('current_index', 0)
     
-    # Показываем текущий объект
     await show_property_at_index(
         callback.message,
         state,
@@ -278,14 +315,13 @@ async def back_to_property_list(callback: CallbackQuery, state: FSMContext):
     )
     
     await callback.answer("🔙 Возврат к списку объектов")
-
+    log_user_action(callback.from_user.id, callback.from_user.username, "Возврат к списку объектов")
 
 @router.callback_query(F.data == "end_search")
-@handle_errors(error_handler)
+@error_handler(operation_name="Завершение поиска")
 async def end_search(callback: CallbackQuery, state: FSMContext):
     """
     Завершает процесс поиска и возвращает пользователя в главное меню.
-    Очищает все данные поиска из состояния FSM.
     """
     await state.clear()
     
@@ -298,20 +334,18 @@ async def end_search(callback: CallbackQuery, state: FSMContext):
     )
     
     await callback.answer()
+    log_user_action(callback.from_user.id, callback.from_user.username, "Завершение поиска")
 
-
-@router.message(SearchStates.viewing_properties)
-@handle_errors(error_handler)
+@router.message(SearchStates.viewing_listings)
+@error_handler(operation_name="Обработка текста во время поиска")
 async def handle_text_during_search(message: Message, state: FSMContext):
     """
     Обрабатывает текстовые сообщения во время просмотра объектов.
-    Предоставляет пользователю подсказки о том, как использовать интерфейс.
     """
     if message.text and message.text.lower() in ['выход', 'завершить', 'стоп']:
         await end_search(message, state)
         return
     
-    # Показываем подсказку пользователю
     await message.reply(
         "💡 Используйте кнопки под сообщением для навигации по объектам.\n\n"
         "• ⬅️➡️ - переход между объектами\n"
@@ -321,3 +355,4 @@ async def handle_text_during_search(message: Message, state: FSMContext):
         "Или напишите 'выход' для завершения поиска.",
         reply_markup=None
     )
+    log_user_action(message.from_user.id, message.from_user.username, "Ввод текста во время поиска")

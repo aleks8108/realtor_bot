@@ -21,9 +21,9 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Импортируем конфигурацию и обработчики
-from config import BOT_TOKEN, LOG_LEVEL
+from config import BOT_TOKEN, LOGGING_LEVEL, validate_config
 from handlers import admin, request, search, start
-from services.error_handler import ErrorHandler
+from services.error_handler import setup_global_error_handler
 
 # Настройка логирования для всего приложения
 def setup_logging():
@@ -32,7 +32,7 @@ def setup_logging():
     Использует единый формат и уровень логирования для консистентности.
     """
     logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+        level=getattr(logging, LOGGING_LEVEL.upper(), logging.INFO),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         stream=sys.stdout
     )
@@ -40,7 +40,6 @@ def setup_logging():
     # Снижаем уровень логирования для библиотек aiogram, чтобы уменьшить шум
     logging.getLogger('aiogram').setLevel(logging.WARNING)
     logging.getLogger('aiohttp').setLevel(logging.WARNING)
-
 
 async def setup_bot_commands(bot: Bot):
     """
@@ -58,7 +57,6 @@ async def setup_bot_commands(bot: Bot):
     
     await bot.set_my_commands(commands)
 
-
 def register_handlers(dp: Dispatcher):
     """
     Регистрирует все обработчики сообщений в диспетчере.
@@ -69,42 +67,6 @@ def register_handlers(dp: Dispatcher):
     dp.include_router(request.router)   # Обработка заявок
     dp.include_router(search.router)    # Поиск и просмотр объектов
     dp.include_router(start.router)     # Базовые команды (низкий приоритет)
-
-
-async def setup_error_handling(dp: Dispatcher):
-    """
-    Настраивает глобальную обработку ошибок для диспетчера.
-    Это последний рубеж защиты от необработанных исключений.
-    """
-    error_handler = ErrorHandler()
-    
-    @dp.error()
-    async def global_error_handler(event, data: Dict[str, Any]):
-        """
-        Глобальный обработчик ошибок для всего бота.
-        Логирует ошибки и отправляет пользователю понятное сообщение.
-        """
-        try:
-            if event.update.message:
-                user_id = event.update.message.from_user.id
-                await error_handler.handle_error(
-                    event.exception,
-                    event.update.message,
-                    f"Глобальная ошибка для пользователя {user_id}"
-                )
-            elif event.update.callback_query:
-                user_id = event.update.callback_query.from_user.id
-                await error_handler.handle_callback_error(
-                    event.exception,
-                    event.update.callback_query,
-                    f"Глобальная ошибка callback для пользователя {user_id}"
-                )
-            else:
-                logging.error(f"Необработанная глобальная ошибка: {event.exception}")
-                
-        except Exception as e:
-            logging.critical(f"Критическая ошибка в глобальном обработчике: {e}")
-
 
 async def on_startup(bot: Bot):
     """
@@ -130,10 +92,13 @@ async def on_startup(bot: Bot):
         test_properties = await sheets_service.get_all_properties()
         logger.info(f"Google Sheets подключен. Найдено {len(test_properties) if test_properties else 0} объектов")
         
+        # Инициализируем базу данных
+        from handlers.admin import init_db
+        init_db()
+        
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {e}")
         raise
-
 
 async def on_shutdown(bot: Bot):
     """
@@ -142,7 +107,6 @@ async def on_shutdown(bot: Bot):
     """
     logger = logging.getLogger(__name__)
     logger.info("Бот остановлен")
-
 
 def create_bot() -> Bot:
     """
@@ -160,7 +124,6 @@ def create_bot() -> Bot:
         )
     )
 
-
 def create_dispatcher() -> Dispatcher:
     """
     Создает и настраивает диспетчер с хранилищем состояний.
@@ -168,7 +131,6 @@ def create_dispatcher() -> Dispatcher:
     """
     storage = MemoryStorage()
     return Dispatcher(storage=storage)
-
 
 async def main():
     """
@@ -180,12 +142,15 @@ async def main():
     logger = logging.getLogger(__name__)
     
     try:
+        # Проверяем конфигурацию
+        validate_config()  # Добавляем вызов проверки конфигурации
+        
         # Создаем бота и диспетчер
         bot = create_bot()
         dp = create_dispatcher()
         
-        # Настраиваем обработку ошибок
-        await setup_error_handling(dp)
+        # Настраиваем глобальную обработку ошибок
+        setup_global_error_handler(bot)
         
         # Регистрируем все обработчики
         register_handlers(dp)
@@ -199,8 +164,8 @@ async def main():
         # Запускаем polling
         await dp.start_polling(
             bot,
-            skip_updates=True,  # Пропускаем накопившиеся сообщения при перезапуске
-            handle_signals=True  # Корректно обрабатываем сигналы остановки
+            skip_updates=True,
+            handle_signals=True
         )
         
     except KeyboardInterrupt:
@@ -210,7 +175,6 @@ async def main():
         raise
     finally:
         logger.info("Завершение работы бота")
-
 
 if __name__ == "__main__":
     """
