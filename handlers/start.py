@@ -12,7 +12,6 @@ from aiogram.fsm.context import FSMContext
 
 from utils.keyboards import create_main_keyboard, get_property_type_keyboard, get_contact_keyboard
 from services.error_handler import error_handler
-from states.search import SearchStates
 from states.request import RequestStates
 from handlers.admin import log_user_action  # Для логирования
 
@@ -121,57 +120,37 @@ async def show_contacts(message: Message):
         parse_mode='HTML'
     )
 
-@router.message(Command("search"))
-@error_handler(operation_name="Запуск поиска (/search)")
-async def cmd_search(message: Message, state: FSMContext):
-    """
-    Альтернативный способ запуска поиска через команду.
-    Перенаправляет на процесс поиска с установкой начального состояния.
-    """
-    await state.set_state(SearchStates.awaiting_property_type)
-    await message.answer(
-        "Выберите тип недвижимости:",
-        reply_markup=get_property_type_keyboard()  # Используем готовую клавиатуру для выбора типа
-    )
-    logger.info(f"Пользователь {message.from_user.id} запустил поиск через /search")
+
 
 @router.message()
 @error_handler(operation_name="Обработка неизвестной команды")
 async def handle_unknown_message(message: Message):
-    """
-    Обработчик неизвестных сообщений.
-    Помогает пользователям понять, как правильно использовать бота.
-    """
     unknown_message = (
         f"🤔 Я не понимаю эту команду.\n\n"
         f"Воспользуйтесь кнопками меню или командами:\n"
         f"• /start - главное меню\n"
         f"• /help - справка\n"
-        f"• /search - поиск объектов\n\n"
+        f"• /cancel - отменить текущее действие\n\n"  # Убрано /search
         f"Или просто нажмите нужную кнопку ниже:"
     )
-    
-    await message.reply(
-        unknown_message,
-        reply_markup=create_main_keyboard()
-    )
+    await message.reply(unknown_message, reply_markup=create_main_keyboard())
 
 # Добавляем обработчики для инлайн-кнопок
 
-@router.callback_query(F.data == "search_property")
+""" @router.callback_query(F.data == "search_property")
 @error_handler(operation_name="Запуск поиска через инлайн-кнопку")
 async def process_search_property(callback: CallbackQuery, state: FSMContext):
-    """
-    Обрабатывает нажатие инлайн-кнопки '🔍 Поиск недвижимости'.
-    Запускает процесс поиска с начальным состоянием.
-    """
+    
+    # Обрабатывает нажатие инлайн-кнопки '🔍 Поиск недвижимости'.
+    # Запускает процесс поиска с начальным состоянием.
+    
     await state.set_state(SearchStates.awaiting_property_type)
     await callback.message.answer(
         "Выберите тип недвижимости:",
         reply_markup=get_property_type_keyboard()  # Используем клавиатуру для выбора типа
     )
     await callback.answer("Начало поиска...")
-    logger.info(f"Пользователь {callback.from_user.id} запустил поиск через инлайн-кнопку")
+    logger.info(f"Пользователь {callback.from_user.id} запустил поиск через инлайн-кнопку") """
 
 @router.callback_query(F.data == "create_request")
 @error_handler(operation_name="Запуск подачи заявки через инлайн-кнопку")
@@ -189,31 +168,71 @@ async def process_create_request(callback: CallbackQuery, state: FSMContext):
 async def show_phone_info(callback: CallbackQuery):
     await callback.answer("Номер телефона: +7 905 476 44 48. Нажмите, чтобы позвонить.", show_alert=True)
 
-@router.callback_query(F.data == "contact_realtor")
+""" @router.callback_query(F.data == "contact_realtor")
 @error_handler(operation_name="Показ контактов через инлайн-кнопку")
 async def process_contact_realtor(callback: CallbackQuery):
-    """
-    Обрабатывает нажатие инлайн-кнопки '📞 Связаться с риэлтором'.
-    Отображает контактную информацию.
-    """
     contacts_message = (
         f"📞 <b>Контактная информация</b>\n\n"
         f"🏢 <b>Наша компания</b>\n"
         f"Агентство недвижимости 'ДомСервис'\n\n"
         f"📱 <b>Телефоны:</b>\n"
-        f"• Отдел продаж: +7 (XXX) XXX-XX-XX\n"
-        f"• Отдел аренды: +7 (XXX) XXX-XX-XX\n\n"
+        f"• Отдел продаж: +7 (905) 476-44-48\n"
+        f"• Отдел аренды: +7 (909) 461-55-59\n\n"
         f"🕐 <b>Режим работы:</b>\n"
         f"Пн-Пт: 9:00 - 19:00\n"
         f"Сб-Вс: 10:00 - 17:00\n\n"
         f"📍 <b>Адрес офиса:</b>\n"
         f"г. Москва, ул. Примерная, д. 123\n\n"
-        f"💬 Или просто напишите в Telegram: @aleks8108"
+        f"💬 Или просто напишите в Telegram: @aleks8108\n"
+        f"📧 Написать email: aleks8108@gmail.com"
     )
-    await callback.message.answer(
-        contacts_message,
-        reply_markup=get_contact_keyboard(),
-        parse_mode='HTML'
-    )
+    keyboard = get_contact_keyboard()
+    logger.debug(f"Клавиатура перед отправкой: {keyboard}")
+    try:
+        await callback.message.answer(contacts_message, reply_markup=keyboard, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Ошибка при отправке сообщения: {e}")
     await callback.answer("Контакты показаны")
+    logger.info(f"Пользователь {callback.from_user.id} запросил контакты") """
+
+
+@router.callback_query(F.data == "contact_realtor")
+@error_handler(operation_name="Показ контактов через инлайн-кнопку")
+async def process_contact_realtor(callback: CallbackQuery):
+    contacts_message = (
+        f"📞 <b>Контактная информация</b>\n\n"
+        f"🏢 <b>Наша компания</b>\n"
+        f"Агентство недвижимости 'ДомСервис'\n\n"
+        f"🕐 <b>Режим работы:</b>\n"
+        f"Пн-Пт: 9:00 - 19:00\n"
+        f"Сб-Вс: 10:00 - 17:00\n\n"
+        f"📍 <b>Адрес офиса:</b>\n"
+        f"г. Москва, ул. Примерная, д. 123\n\n"
+        f"💬 Или просто напишите в Telegram: <a href='https://t.me/aleks8108'>@aleks8108</a>"
+    )
+    keyboard = get_contact_keyboard()
+    logger.debug(f"Клавиатура перед отправкой: {keyboard}")
+    try:
+        await callback.message.answer(contacts_message, reply_markup=keyboard, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Ошибка при отправке сообщения: {e}")
+    await callback.answer("Выберите контакт для подробностей")
     logger.info(f"Пользователь {callback.from_user.id} запросил контакты")
+
+@router.callback_query(F.data == "show_sales_phone")
+async def show_sales_phone(callback: CallbackQuery):
+    contact_message = "📞 Отдел продаж: +7 (905) 476-44-48\n(Нажмите и удерживайте для копирования)"
+    await callback.message.answer(contact_message)
+    await callback.answer("Номер отдела продаж отображен")
+
+@router.callback_query(F.data == "show_rent_phone")
+async def show_rent_phone(callback: CallbackQuery):
+    contact_message = "📞 Отдел аренды: +7 (909) 461-55-59\n(Нажмите и удерживайте для копирования)"
+    await callback.message.answer(contact_message)
+    await callback.answer("Номер отдела аренды отображен")
+
+@router.callback_query(F.data == "show_email")
+async def show_email(callback: CallbackQuery):
+    contact_message = "📧 Email: aleks8108@gmail.com\n(Нажмите и удерживайте для копирования)"
+    await callback.message.answer(contact_message)
+    await callback.answer("Email отображен")

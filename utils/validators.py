@@ -9,7 +9,10 @@ from typing import List, Optional, Union
 from urllib.parse import urlparse
 from config import MAX_COMMENT_LENGTH, SUPPORTED_IMAGE_FORMATS
 from exceptions.custom_exceptions import ValidationError
+import logging
 
+# Настройка логгера
+logger = logging.getLogger(__name__)
 
 class DataValidator:
     """
@@ -64,7 +67,7 @@ class DataValidator:
             ValidationError: Если номер некорректен
         """
         if not phone or not phone.strip():
-            raise ValidationError("Номер телефона не может быть пустым")
+            raise ValidationError("Номер телефона не указан")
         
         # Удаляем все символы кроме цифр и знака +
         cleaned_phone = re.sub(r'[^\d+]', '', phone.strip())
@@ -72,19 +75,23 @@ class DataValidator:
         # Проверяем базовый формат российского номера
         if cleaned_phone.startswith('+7'):
             if len(cleaned_phone) != 12:  # +7 + 10 цифр
-                raise ValidationError("Некорректный формат российского номера")
+                raise ValidationError("Некорректный формат российского номера: ожидается +7 и 10 цифр")
         elif cleaned_phone.startswith('8'):
             if len(cleaned_phone) != 11:  # 8 + 10 цифр
-                raise ValidationError("Некорректный формат российского номера")
+                raise ValidationError("Некорректный формат российского номера: ожидается 8 и 10 цифр")
             # Заменяем 8 на +7
             cleaned_phone = '+7' + cleaned_phone[1:]
         elif cleaned_phone.startswith('7'):
             if len(cleaned_phone) != 11:  # 7 + 10 цифр
-                raise ValidationError("Некорректный формат российского номера")
+                raise ValidationError("Некорректный формат российского номера: ожидается 7 и 10 цифр")
             # Добавляем +
             cleaned_phone = '+' + cleaned_phone
         else:
             raise ValidationError("Номер должен начинаться с +7, 8 или 7")
+        
+        # Дополнительная проверка на корректность номера (только цифры после префикса)
+        if not cleaned_phone[1:].isdigit() or not all(c.isdigit() for c in cleaned_phone[1:]):
+            raise ValidationError("Номер содержит недопустимые символы после префикса")
         
         return cleaned_phone
     
@@ -220,7 +227,7 @@ class DataValidator:
             'price': DataValidator._validate_price(listing_dict['price']),
             'rooms': str(listing_dict.get('rooms', '')).strip(),
             'description': str(listing_dict.get('description', 'Описание не указано')).strip(),
-            'photo_url': DataValidator.validate_photo_urls(listing_dict.get('photo_url', []))
+            'photo_urls': DataValidator.validate_photo_urls(listing_dict.get('photo_urls', []))  # Исправлено с photo_url на photo_urls
         }
         
         return validated_listing

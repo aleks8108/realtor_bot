@@ -1,6 +1,7 @@
 """
 Обработчик административных функций бота.
-Предоставляет интерфейс для администраторов, включая просмотр действий пользователей.
+Предоставляет интерфейс для администраторов, включая просмотр действий пользователей,
+статистики заявок и истории.
 """
 
 from aiogram import Router, F
@@ -10,6 +11,7 @@ from config import ADMIN_ID
 import logging
 from datetime import datetime
 import sqlite3
+from services.sheets import GoogleSheetsService
 
 from services.error_handler import error_handler  # Импортируем декоратор
 
@@ -18,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Фильтр для админа
 def is_admin(user_id):
-    return user_id in ADMIN_ID
+    return user_id in ADMIN_ID if isinstance(ADMIN_ID, (list, tuple)) else user_id == ADMIN_ID
 
 # Инициализация базы данных
 def init_db():
@@ -70,6 +72,46 @@ def get_user_actions(limit=10):
         logger.error(f"Ошибка при получении действий пользователей: {e}")
         raise
 
+# Получение статистики заявок (примерная реализация)
+async def get_request_stats():
+    """
+    Получает статистику заявок из Google Sheets.
+    """
+    sheets_service = GoogleSheetsService()
+    requests = await sheets_service.get_all_requests()
+    if not requests:
+        return "Нет данных о заявках."
+    total_requests = len(requests)
+    unique_users = len(set(req.get("user_id") for req in requests))
+    return f"Всего заявок: {total_requests}\nУникальных пользователей: {unique_users}"
+
+# Получение истории заявок
+async def get_request_history(limit=10):
+    """
+    Получает последние заявки из Google Sheets.
+    """
+    sheets_service = GoogleSheetsService()
+    requests = await sheets_service.get_all_requests()
+    if not requests:
+        return "Нет истории заявок."
+    sorted_requests = sorted(requests, key=lambda x: x.get("timestamp", ""), reverse=True)[:limit]
+    return "\n".join([f"ID: {req.get('user_id')} - {req.get('timestamp')} - {req.get('property_id')}" for req in sorted_requests])
+
+# Очистка логов действий
+def clear_user_actions():
+    """
+    Очищает таблицу действий пользователей.
+    """
+    try:
+        with sqlite3.connect('user_actions.db') as conn:
+            conn.execute("DELETE FROM actions")
+            conn.commit()
+        logger.info("Логи действий пользователей очищены")
+        return "Логи действий успешно очищены."
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при очистке логов: {e}")
+        raise
+
 @router.message(Command("admin"))
 @error_handler(operation_name="Открытие админ-панели (/admin)")
 async def admin_panel(message: Message):
@@ -81,10 +123,17 @@ async def admin_panel(message: Message):
         await message.answer("У вас нет прав доступа.")
         return
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Посмотреть действия пользователей", callback_data="view_actions")]
+        [
+            InlineKeyboardButton(text="👥 Действия пользователей", callback_data="view_actions"),
+            InlineKeyboardButton(text="📊 Статистика заявок", callback_data="view_stats")
+        ],
+        [
+            InlineKeyboardButton(text="📋 История заявок", callback_data="view_requests"),
+            InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")
+        ]
     ])
     await message.answer("Добро пожаловать в панель администратора!", reply_markup=keyboard)
-    logger.info(f"Администратор {message.from_user.id} (@{message.from_user.username}) открыл админ-панель")
+    log_user_action(message.from_user.id, message.from_user.username, "Открыт админ-панель")
 
 @router.callback_query(lambda c: c.data == "view_actions")
 @error_handler(operation_name="Просмотр действий пользователей")
@@ -101,6 +150,75 @@ async def view_user_actions(callback: CallbackQuery):
     else:
         actions_text = "\n".join(actions)
         await callback.message.edit_text(f"Последние действия пользователей:\n{actions_text}")
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "view_stats")
+@error_handler(operation_name="Просмотр статистики заявок")
+async def view_request_stats(callback: CallbackQuery):
+    """
+    Обработчик для просмотра статистики заявок.
+    """
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет прав доступа.", show_alert=True)
+        return
+    stats = await get_request_stats()
+    await callback.message.edit_text(f"Статистика заявок:\n{stats}")
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "view_requests")
+@error_handler(operation_name="Просмотр истории заявок")
+async def view_request_history(callback: CallbackQuery):
+    """
+    Обработчик для просмотра истории заявок.
+    """
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет прав доступа.", show_alert=True)
+        return
+    history = await get_request_history()
+    await callback.message.edit_text(f"История заявок:\n{history}")
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "clear_logs")
+@error_handler(operation_name="Очистка логов")
+async def confirm_clear_logs(callback: CallbackQuery):
+    """
+    Обработчик для подтверждения очистки логов.
+    """
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет прав доступа.", show_alert=True)
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да", callback_data="confirm_clear"),
+            InlineKeyboardButton(text="❌ Нет", callback_data="cancel_clear")
+        ]
+    ])
+    await callback.message.edit_text("Вы уверены, что хотите очистить логи действий?", reply_markup=keyboard)
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "confirm_clear")
+@error_handler(operation_name="Подтверждение очистки логов")
+async def execute_clear_logs(callback: CallbackQuery):
+    """
+    Обработчик для выполнения очистки логов после подтверждения.
+    """
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет прав доступа.", show_alert=True)
+        return
+    result = clear_user_actions()
+    await callback.message.edit_text(result)
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "cancel_clear")
+@error_handler(operation_name="Отмена очистки логов")
+async def cancel_clear_logs(callback: CallbackQuery):
+    """
+    Обработчик для отмены очистки логов.
+    """
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет прав доступа.", show_alert=True)
+        return
+    await callback.message.edit_text("Очистка логов отменена.")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("interested_"))

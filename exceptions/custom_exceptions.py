@@ -5,8 +5,9 @@
 
 # Базовые исключения
 class ValidationError(Exception):
-    """Базовое исключение для ошибок валидации данных."""
-    pass
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
 
 class ServiceError(Exception):
     """Базовое исключение для ошибок внешних сервисов."""

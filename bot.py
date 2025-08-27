@@ -19,27 +19,18 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramAPIError
+
+# Установка уровня логирования на DEBUG
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Импортируем конфигурацию и обработчики
 from config import BOT_TOKEN, LOGGING_LEVEL, validate_config
-from handlers import admin, request, search, start
-from services.error_handler import setup_global_error_handler
+from handlers import admin, request, start, calculators
 
-# Настройка логирования для всего приложения
-def setup_logging():
-    """
-    Настраивает систему логирования для всего приложения.
-    Использует единый формат и уровень логирования для консистентности.
-    """
-    logging.basicConfig(
-        level=getattr(logging, LOGGING_LEVEL.upper(), logging.INFO),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        stream=sys.stdout
-    )
-    
-    # Снижаем уровень логирования для библиотек aiogram, чтобы уменьшить шум
-    logging.getLogger('aiogram').setLevel(logging.WARNING)
-    logging.getLogger('aiohttp').setLevel(logging.WARNING)
+# Снижаем уровень логирования для библиотек aiogram, чтобы уменьшить шум
+logging.getLogger('aiogram').setLevel(logging.WARNING)
+logging.getLogger('aiohttp').setLevel(logging.WARNING)
 
 async def setup_bot_commands(bot: Bot):
     """
@@ -51,8 +42,9 @@ async def setup_bot_commands(bot: Bot):
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
         BotCommand(command="help", description="❓ Помощь"),
-        BotCommand(command="search", description="🔍 Поиск объектов"),
         BotCommand(command="cancel", description="❌ Отменить текущее действие"),
+        BotCommand(command="admin", description="🛠 Кабинет администратора"),
+        BotCommand(command="calculators", description="📊 Калькуляторы")
     ]
     
     await bot.set_my_commands(commands)
@@ -62,11 +54,21 @@ def register_handlers(dp: Dispatcher):
     Регистрирует все обработчики сообщений в диспетчере.
     Порядок регистрации важен - более специфичные обработчики должны быть первыми.
     """
-    # Регистрируем роутеры в правильном порядке приоритета
-    dp.include_router(admin.router)     # Административные команды (высокий приоритет)
-    dp.include_router(request.router)   # Обработка заявок
-    dp.include_router(search.router)    # Поиск и просмотр объектов
-    dp.include_router(start.router)     # Базовые команды (низкий приоритет)
+    dp.include_router(admin.router)
+    dp.include_router(request.router)
+    dp.include_router(calculators.router)
+    dp.include_router(start.router)
+
+def setup_global_error_handler(dp: Dispatcher):
+    """
+    Настраивает глобальный обработчик ошибок для диспетчера.
+    Перехватывает исключения и логирует их для анализа.
+    """
+    @dp.errors()
+    async def errors_handler(event: TelegramAPIError):
+        logger = logging.getLogger(__name__)
+        logger.error(f"Произошла ошибка Telegram API: {event}")
+        return True
 
 async def on_startup(bot: Bot):
     """
@@ -76,23 +78,16 @@ async def on_startup(bot: Bot):
     logger = logging.getLogger(__name__)
     
     try:
-        # Получаем информацию о боте для проверки токена
         bot_info = await bot.get_me()
         logger.info(f"Бот запущен: @{bot_info.username} ({bot_info.full_name})")
         
-        # Настраиваем команды бота
         await setup_bot_commands(bot)
         logger.info("Команды бота настроены")
         
-        # Проверяем доступность Google Sheets
-        from services.sheets import GoogleSheetsService
-        sheets_service = GoogleSheetsService()
-        
-        # Проверяем подключение (пытаемся получить первый объект)
-        test_properties = await sheets_service.get_all_properties()
+        from services.sheets import google_sheets_service
+        test_properties = await google_sheets_service.get_all_properties()
         logger.info(f"Google Sheets подключен. Найдено {len(test_properties) if test_properties else 0} объектов")
         
-        # Инициализируем базу данных
         from handlers.admin import init_db
         init_db()
         
@@ -107,6 +102,9 @@ async def on_shutdown(bot: Bot):
     """
     logger = logging.getLogger(__name__)
     logger.info("Бот остановлен")
+    from services.sheets import google_sheets_service
+    await google_sheets_service.close()
+    await bot.session.close()
 
 def create_bot() -> Bot:
     """
@@ -119,8 +117,8 @@ def create_bot() -> Bot:
     return Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(
-            parse_mode=ParseMode.HTML,  # HTML по умолчанию для форматирования
-            protect_content=False,      # Разрешаем пересылку сообщений
+            parse_mode=ParseMode.HTML,
+            protect_content=False,
         )
     )
 
@@ -137,31 +135,22 @@ async def main():
     Главная функция приложения.
     Координирует инициализацию всех компонентов и запуск бота.
     """
-    # Настраиваем логирование
-    setup_logging()
     logger = logging.getLogger(__name__)
     
     try:
-        # Проверяем конфигурацию
-        validate_config()  # Добавляем вызов проверки конфигурации
+        validate_config()
         
-        # Создаем бота и диспетчер
         bot = create_bot()
         dp = create_dispatcher()
         
-        # Настраиваем глобальную обработку ошибок
-        setup_global_error_handler(bot)
-        
-        # Регистрируем все обработчики
+        setup_global_error_handler(dp)
         register_handlers(dp)
         
-        # Настраиваем хуки жизненного цикла
         dp.startup.register(on_startup)
         dp.shutdown.register(on_shutdown)
         
         logger.info("Запуск бота...")
         
-        # Запускаем polling
         await dp.start_polling(
             bot,
             skip_updates=True,
@@ -177,10 +166,6 @@ async def main():
         logger.info("Завершение работы бота")
 
 if __name__ == "__main__":
-    """
-    Точка входа в приложение.
-    Запускает главную асинхронную функцию в event loop.
-    """
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -188,3 +173,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Критическая ошибка запуска: {e}")
         sys.exit(1)
+        

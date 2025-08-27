@@ -1,4 +1,3 @@
-# services/error_handler.py
 import logging
 import traceback
 from typing import Optional, Callable, Any, Union
@@ -61,6 +60,10 @@ class ErrorHandler:
                 bot = update.callback_query.bot if hasattr(update.callback_query, 'bot') else None
                 chat_id = update.callback_query.message.chat.id if update.callback_query.message else None
         
+        if not bot or not chat_id:
+            logger.warning(f"Не удалось отправить сообщение об ошибке: bot={bot}, chat_id={chat_id}")
+            return
+
         logger.error(
             f"Ошибка в операции '{user_context}' для пользователя {user_id}: "
             f"{type(error).__name__}: {str(error)}\n"
@@ -69,15 +72,14 @@ class ErrorHandler:
         
         user_message = ErrorHandler._get_user_message(error)
         
-        if bot and chat_id:
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=user_message,
-                    reply_markup=get_main_menu()
-                )
-            except Exception as send_error:
-                logger.error(f"Не удалось отправить сообщение об ошибке пользователю {user_id}: {send_error}")
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=user_message,
+                reply_markup=get_main_menu()
+            )
+        except Exception as send_error:
+            logger.error(f"Не удалось отправить сообщение об ошибке пользователю {user_id}: {send_error}")
         
         if callback:
             try:
@@ -145,6 +147,9 @@ async def retry_operation(
     backoff_factor: float = 2.0,
     operation_name: str = "Неизвестная операция"
 ) -> Any:
+    if not asyncio.iscoroutinefunction(operation):
+        raise ValueError("Операция должна быть корутиной")
+    
     last_exception = None
     
     for attempt in range(max_retries + 1):
@@ -172,13 +177,12 @@ def setup_global_error_handler(bot: Bot):
             user_context="Глобальная обработка"
         )
     
-    if hasattr(bot, 'register_error_handler'):
-        bot.register_error_handler(global_error_handler)
-    
+    bot.register_error_handler(global_error_handler)
     return global_error_handler
 
-async def handle_message_error(error: Exception, message: Message, context: str = "Обработка сообщения"):
-    await ErrorHandler.handle_error(error, message=message, user_context=context)
-
-async def handle_callback_error(error: Exception, callback: CallbackQuery, context: str = "Обработка callback"):
-    await ErrorHandler.handle_error(error, callback=callback, user_context=context)
+# Удаляем дублирующие функции, используя handle_error напрямую
+# async def handle_message_error(error: Exception, message: Message, context: str = "Обработка сообщения"):
+#     await ErrorHandler.handle_error(error, message=message, user_context=context)
+#
+# async def handle_callback_error(error: Exception, callback: CallbackQuery, context: str = "Обработка callback"):
+#     await ErrorHandler.handle_error(error, callback=callback, user_context=context)

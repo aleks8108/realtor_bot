@@ -1,10 +1,15 @@
 # Файл: states/__init__.py
 """
-Инициализация модуля состояний.
-Экспортирует все группы состояний для удобного импорта в других модулях.
+Инициализация всех состояний FSM для риэлторского бота.
 """
 
 from .request import RequestStates
-from .search import SearchStates
+from .calculators import MortgageStates, ValuationStates, InvestmentStates, CalculatorStates  # Только актуальные состояния
 
-__all__ = ['RequestStates', 'SearchStates']
+__all__ = [
+    'RequestStates',
+    'MortgageStates',
+    'ValuationStates',
+    'InvestmentStates',
+    'CalculatorStates'
+]
