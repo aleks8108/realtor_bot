@@ -14,6 +14,7 @@ from utils.keyboards import create_main_keyboard, get_property_type_keyboard, ge
 from services.error_handler import error_handler
 from states.request import RequestStates
 from handlers.admin import log_user_action  # Для логирования
+from handlers.calculators import cmd_calculators
 
 # Создаем роутер для базовых команд
 router = Router()
@@ -236,3 +237,19 @@ async def show_email(callback: CallbackQuery):
     contact_message = "📧 Email: aleks8108@gmail.com\n(Нажмите и удерживайте для копирования)"
     await callback.message.answer(contact_message)
     await callback.answer("Email отображен")
+    
+    
+# ... (существующий код)
+
+@router.callback_query(F.data == "open_calculators")
+@error_handler(operation_name="Открытие калькуляторов через инлайн-кнопку")
+async def process_open_calculators(callback: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает нажатие инлайн-кнопки '📊 Калькуляторы'.
+    Переиспользует логику команды /calculators.
+    """
+    await cmd_calculators(callback.message, state)  # Передаем message и state для совместимости
+    await callback.answer("Раздел калькуляторов открыт")
+    logger.info(f"Пользователь {callback.from_user.id} (@{callback.from_user.username}) открыл калькуляторы через кнопку")
+
+# ... (остальной код)

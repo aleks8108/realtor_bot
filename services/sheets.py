@@ -205,7 +205,7 @@ class GoogleSheetsService:
         await self._initialize_client()
         try:
             sheet = await self.get_sheet('Requests')
-            headers = ['timestamp', 'user_id', 'username', 'user_name', 'phone', 'property_id', 'property_address', 'comments']
+            headers = ['timestamp', 'user_id', 'username', 'user_name', 'phone', 'property_id', 'property_address', 'comments', 'status']
             existing_data = sheet.get_all_values()
             if not existing_data or existing_data[0] != headers:
                 sheet.append_row(headers)
@@ -217,7 +217,8 @@ class GoogleSheetsService:
                 request_data.get('phone', ''),
                 request_data.get('property_id', ''),
                 request_data.get('property_address', ''),
-                request_data.get('comments', '')
+                request_data.get('comments', ''),
+                request_data.get('status', '')  # Добавляем значение status
             ])
             logger.info("Заявка успешно сохранена")
         except (HttpError, SSLError, RequestException) as e:

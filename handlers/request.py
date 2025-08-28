@@ -265,7 +265,8 @@ async def complete_request(message: Message, state: FSMContext):
             "phone": data.get("phone", "Не указан"),
             "property_id": prop.get("id", "N/A"),
             "property_address": prop.get("address", "Не указан"),
-            "comments": comments
+            "comments": comments,
+            "status": "новая"  # Добавляем поле status со значением "новая"
         }
         try:
             await google_sheets_service.save_request(request_data)
