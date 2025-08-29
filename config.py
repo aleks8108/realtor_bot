@@ -5,10 +5,8 @@ from dotenv import load_dotenv
 from typing import List, Optional
 
 # Загрузка переменных окружения из .env файла
-env_path = Path(__file__).parent / ".env"
-if not env_path.exists():
-    raise FileNotFoundError(f"Файл .env не найден в {env_path}. Создайте его и добавьте необходимые переменные.")
-load_dotenv(dotenv_path=env_path)
+env_path = os.path.join(os.path.dirname(__file__), '.env')
+load_dotenv(env_path)
 
 # Базовые настройки проекта
 BASE_DIR = Path(__file__).parent
