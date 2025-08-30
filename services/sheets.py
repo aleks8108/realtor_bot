@@ -1,13 +1,9 @@
-"""
-Модуль для работы с Google Sheets API.
-Предоставляет асинхронные методы для взаимодействия с таблицами,
-включая получение объектов недвижимости, фильтрацию и сохранение заявок.
-"""
-
+import os
 import time
 import logging
 from typing import Dict, Any, List, Optional
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 import gspread
 from gspread import authorize, Spreadsheet
 from gspread.exceptions import WorksheetNotFound
@@ -33,13 +29,13 @@ def with_retry(max_retries=5, backoff_factor=1):
                 except (SSLError, ConnectionError, RequestException, HttpError) as e:
                     logger.error(f"Ошибка в {func.__name__} (попытка {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
-                        await asyncio.sleep(2 ** attempt)
+                        await asyncio.sleep(2 ** attempt * backoff_factor)
                     else:
                         raise
                 except Exception as e:
                     logger.error(f"Неожиданная ошибка в {func.__name__} (попытка {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
-                        await asyncio.sleep(2 ** attempt)
+                        await asyncio.sleep(2 ** attempt * backoff_factor)
                     else:
                         raise
         return wrapper
@@ -62,7 +58,6 @@ class GoogleSheetsService:
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self._session.mount("https://", adapter)
-        # Устанавливаем глобальный таймаут для сессии
         self._session.timeout = 30  # Таймаут 30 секунд
 
     @with_retry()
@@ -74,20 +69,30 @@ class GoogleSheetsService:
         async with self._lock:
             try:
                 logger.info("Инициализация Google Sheets клиента...")
-                logger.info(f"Проверка файла credentials.json в: {__file__}")
-                credentials = Credentials.from_service_account_file(
-                    'credentials.json',
-                    scopes=['https://www.googleapis.com/auth/spreadsheets']
-                )
+                # Получаем закодированные учетные данные из переменной окружения
+                credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+                if not credentials_json:
+                    raise ValueError("Переменная GOOGLE_CREDENTIALS_JSON не найдена в окружении.")
+
+                # Декодируем JSON из base64
+                import json
+                import base64
+                creds_data = json.loads(base64.b64decode(credentials_json).decode('utf-8'))
+                creds = Credentials.from_service_account_info(creds_data, scopes=['https://www.googleapis.com/auth/spreadsheets'])
                 logger.info("Проверка учетных данных...")
                 import google.auth.transport.requests
                 request = google.auth.transport.requests.Request(session=self._session)
-                credentials.refresh(request)
+                creds.refresh(request)  # Обновляем токен, если нужно
                 logger.info("Аутентификация клиента...")
-                self._client = authorize(credentials)
+                # Оборачиваем синхронный authorize в асинхронный вызов
+                loop = asyncio.get_event_loop()
+                self._client = await loop.run_in_executor(None, lambda: authorize(creds))
                 logger.info(f"Попытка открыть таблицу с ID: {SPREADSHEET_ID}")
                 self._spreadsheet = self._client.open_by_key(SPREADSHEET_ID)
                 logger.info("Таблица успешно открыта")
+            except ValueError as e:
+                logger.error(f"Ошибка конфигурации: {e}")
+                raise GoogleSheetsError(f"Ошибка конфигурации: {e}")
             except Exception as e:
                 logger.error(f"Ошибка аутентификации в Google Sheets: {e}")
                 raise GoogleSheetsError(f"Ошибка аутентификации в Google Sheets: {e}")
@@ -97,7 +102,8 @@ class GoogleSheetsService:
         """Получает лист по имени с обработкой ошибок."""
         await self._initialize_client()
         try:
-            return self._spreadsheet.worksheet(sheet_name)
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, lambda: self._spreadsheet.worksheet(sheet_name))
         except WorksheetNotFound:
             logger.error(f"Лист {sheet_name} не найден")
             raise ServiceError(f"Лист {sheet_name} не найден")
@@ -111,7 +117,8 @@ class GoogleSheetsService:
         await self._initialize_client()
         try:
             sheet = await self.get_sheet('Listings')
-            records = sheet.get_all_records()
+            loop = asyncio.get_event_loop()
+            records = await loop.run_in_executor(None, lambda: sheet.get_all_records())
             logger.info(f"Получено {len(records)} объектов из листа Listings")
             return records
         except ServiceError as e:
@@ -126,9 +133,10 @@ class GoogleSheetsService:
         await self._initialize_client()
         try:
             sheet = await self.get_sheet('Listings')
-            records = sheet.get_all_records()
+            loop = asyncio.get_event_loop()
+            records = await loop.run_in_executor(None, lambda: sheet.get_all_records())
             for record in records:
-                if str(record.get('id')) == str(property_id):  # Сравнение как строк для надежности
+                if str(record.get('id')) == str(property_id):
                     logger.info(f"Найден объект с ID {property_id}")
                     return record
             logger.warning(f"Объект с ID {property_id} не найден")
@@ -145,7 +153,8 @@ class GoogleSheetsService:
         await self._initialize_client()
         try:
             sheet = await self.get_sheet('Listings')
-            all_values = sheet.get_all_values()
+            loop = asyncio.get_event_loop()
+            all_values = await loop.run_in_executor(None, lambda: sheet.get_all_values())
             if not all_values or not all_values[0]:
                 raise ValueError("Лист Listings пуст или не содержит заголовков")
             headers = [header.strip() for header in all_values[0]]
@@ -190,7 +199,8 @@ class GoogleSheetsService:
         await self._initialize_client()
         try:
             sheet = await self.get_sheet('Requests')
-            records = sheet.get_all_records()
+            loop = asyncio.get_event_loop()
+            records = await loop.run_in_executor(None, lambda: sheet.get_all_records())
             logger.info(f"Получено {len(records)} заявок из листа Requests")
             return records
         except ServiceError as e:
@@ -205,11 +215,12 @@ class GoogleSheetsService:
         await self._initialize_client()
         try:
             sheet = await self.get_sheet('Requests')
+            loop = asyncio.get_event_loop()
+            existing_data = await loop.run_in_executor(None, lambda: sheet.get_all_values())
             headers = ['timestamp', 'user_id', 'username', 'user_name', 'phone', 'property_id', 'property_address', 'comments', 'status']
-            existing_data = sheet.get_all_values()
             if not existing_data or existing_data[0] != headers:
-                sheet.append_row(headers)
-            sheet.append_row([
+                await loop.run_in_executor(None, lambda: sheet.append_row(headers))
+            await loop.run_in_executor(None, lambda: sheet.append_row([
                 request_data.get('timestamp', ''),
                 str(request_data.get('user_id', '')),
                 request_data.get('username', ''),
@@ -218,8 +229,8 @@ class GoogleSheetsService:
                 request_data.get('property_id', ''),
                 request_data.get('property_address', ''),
                 request_data.get('comments', ''),
-                request_data.get('status', '')  # Добавляем значение status
-            ])
+                request_data.get('status', '')
+            ]))
             logger.info("Заявка успешно сохранена")
         except (HttpError, SSLError, RequestException) as e:
             raise ServiceError(f"Ошибка сохранения заявки: {str(e)}")
@@ -233,7 +244,8 @@ class GoogleSheetsService:
         await self._initialize_client()
         try:
             sheet = await self.get_sheet('Prices')
-            records = sheet.get_all_records()
+            loop = asyncio.get_event_loop()
+            records = await loop.run_in_executor(None, lambda: sheet.get_all_records())
             district = district.strip()
             property_type = property_type.strip()
             logger.debug(f"Ищем цену для district={district}, property_type={property_type}")
