@@ -25,8 +25,9 @@ logging.getLogger('aiogram').setLevel(logging.WARNING)
 logging.getLogger('aiohttp').setLevel(logging.WARNING)
 
 # Импортируем конфигурацию и обработчики
-from config import BOT_TOKEN, validate_config, ADMIN_ID, SPREADSHEET_ID
+from config import BOT_TOKEN, validate_config, ADMIN_ID, SPREADSHEET_ID, LOG_FILE, DATABASE_FILE
 from handlers import admin, request, start, calculators
+from services.sheets import google_sheets_service
 
 # Инициализация Redis для FSM
 redis = Redis(
@@ -65,8 +66,8 @@ async def on_startup(bot: Bot):
     logger.info(f"Бот запущен: @{bot_info.username} ({bot_info.full_name})")
     await setup_bot_commands(bot)
     logger.info("Команды бота настроены")
-    logger.info(f"Подключение к Redis: {await redis.ping()}")  # Добавлено
-    from services.sheets import google_sheets_service
+    logger.info(f"Подключение к Redis: {await redis.ping()}")  # Проверка подключения
+    # Инициализация Google Sheets
     test_properties = await google_sheets_service.get_all_properties()
     logger.info(f"Google Sheets подключен. Найдено {len(test_properties) if test_properties else 0} объектов")
     from handlers.admin import init_db
@@ -74,8 +75,8 @@ async def on_startup(bot: Bot):
 
 async def on_shutdown(bot: Bot):
     logger.info("Бот остановлен")
-    from services.sheets import google_sheets_service
     await google_sheets_service.close()
+    await redis.close()
     await bot.session.close()
 
 def create_bot() -> Bot:

@@ -1,21 +1,19 @@
-# config.py
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 from typing import List, Optional
 
-# Загрузка переменных окружения из .env файла
+# Загрузка переменных окружения из .env файла (только для локальной разработки)
 env_path = os.path.join(os.path.dirname(__file__), '.env')
-load_dotenv(env_path)
+load_dotenv(env_path)  # Игнорируется на Render, где используются Environment Variables
 
 # Базовые настройки проекта
 BASE_DIR = Path(__file__).parent
-CREDENTIALS_FILE = BASE_DIR / "credentials.json"
 
 # Telegram Bot настройки
 BOT_TOKEN: Optional[str] = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден в переменных окружения. Проверьте файл .env")
+    raise ValueError("BOT_TOKEN не найден в переменных окружения. Проверьте файл .env или Environment Variables")
 
 # Администраторы бота
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "")
@@ -23,10 +21,7 @@ ADMIN_ID: List[int] = [int(admin_id.strip()) for admin_id in ADMIN_ID_STR.split(
 
 # Google Sheets настройки
 SPREADSHEET_ID: str = os.getenv("SPREADSHEET_ID", "1TLkCSd8lyuz3kNjxE6SvxwkG9WH1NERK_dML969R43w")
-GOOGLE_SHEETS_CREDENTIALS: Path = CREDENTIALS_FILE
-
-if not CREDENTIALS_FILE.exists():
-    raise FileNotFoundError(f"Файл credentials.json не найден в {CREDENTIALS_FILE}. Поместите его в корневую директорию.")
+# Убрано GOOGLE_SHEETS_CREDENTIALS, так как оно не используется
 
 # Настройки логирования
 LOGGING_LEVEL = os.getenv("LOGGING_LEVEL", "INFO").upper()
@@ -72,4 +67,3 @@ def validate_config() -> None:
 
     print(f"✓ Конфигурация успешно загружена")
     print(f"✓ Найдено администраторов: {len(ADMIN_ID)}")
-    print(f"✓ Файл credentials.json: {'найден' if CREDENTIALS_FILE.exists() else 'НЕ НАЙДЕН'}")
